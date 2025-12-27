@@ -1,51 +1,61 @@
-// Haversine formula untuk jarak meter antara dua koordinat
-export function distanceInMeters(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number
-): number {
-  const R = 6371e3; // meters
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const φ1 = toRad(lat1);
-  const φ2 = toRad(lat2);
-  const Δφ = toRad(lat2 - lat1);
-  const Δλ = toRad(lon2 - lon1);
-  const a =
-    Math.sin(Δφ / 2) * Math.sin(Δφ / 2) +
-    Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) * Math.sin(Δλ / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
 export type GeoFence = {
   name: string;
   lat: number;
   lng: number;
-  radiusM: number; // meter
+  radiusM: number;
 };
 
+// Haversine distance (meter)
+function haversineM(lat1: number, lng1: number, lat2: number, lng2: number) {
+  const R = 6371000; // meters
+  const toRad = (v: number) => (v * Math.PI) / 180;
+
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+
+  const a =
+    Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(toRad(lat1)) *
+      Math.cos(toRad(lat2)) *
+      Math.sin(dLng / 2) *
+      Math.sin(dLng / 2);
+
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
 /**
- * Cek apakah (lat,lng) berada di dalam salah satu geofence.
- * Return {ok, nearestName, nearestDistance}
+ * Ambil jarak (meter) ke geofence terdekat.
+ * Return null kalau geofences kosong.
  */
-export function checkGeofence(
+export function getDistanceM(
   lat: number,
   lng: number,
-  fences: GeoFence[]
-): { ok: boolean; nearestName?: string; nearestDistance?: number } {
-  if (fences.length === 0) return { ok: true };
-  let min = Number.POSITIVE_INFINITY;
-  let nearest: GeoFence | undefined;
-  for (const f of fences) {
-    const d = distanceInMeters(lat, lng, f.lat, f.lng);
-    if (d < min) {
-      min = d;
-      nearest = f;
-    }
-    if (d <= f.radiusM) {
-      return { ok: true, nearestName: f.name, nearestDistance: d };
-    }
+  geofences: GeoFence[]
+): number | null {
+  if (!geofences || geofences.length === 0) return null;
+
+  let best: number | null = null;
+  for (const g of geofences) {
+    const d = haversineM(lat, lng, g.lat, g.lng);
+    if (best == null || d < best) best = d;
   }
-  return { ok: false, nearestName: nearest?.name, nearestDistance: min };
+  return best;
+}
+
+/**
+ * True kalau posisi berada di dalam salah satu geofence.
+ */
+export function isInsideAnyFence(
+  lat: number,
+  lng: number,
+  geofences: GeoFence[]
+): boolean {
+  if (!geofences || geofences.length === 0) return false;
+
+  for (const g of geofences) {
+    const d = haversineM(lat, lng, g.lat, g.lng);
+    if (d <= g.radiusM) return true;
+  }
+  return false;
 }

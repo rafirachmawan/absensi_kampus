@@ -1,31 +1,74 @@
+import { useEffect, useMemo, useState } from "react";
 import Topbar from "../components/Topbar";
-import { Plus } from "lucide-react";
 import type { UserLite } from "../types";
+import {
+  Plus,
+  X,
+  Trash2,
+  Loader2,
+  CheckCircle2,
+  LogIn,
+  LogOut,
+} from "lucide-react";
 
-type MahasiswaLite = {
+import { db, firebaseConfig } from "../lib/firebase";
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  onSnapshot,
+  orderBy,
+  query,
+  serverTimestamp,
+  setDoc,
+  updateDoc,
+  where,
+} from "firebase/firestore";
+
+// secondary auth agar dosen tidak logout saat buat akun mahasiswa
+import { initializeApp, type FirebaseApp } from "firebase/app";
+import {
+  getAuth,
+  createUserWithEmailAndPassword,
+  type Auth,
+} from "firebase/auth";
+
+type Course = {
   id: string;
   nama: string;
-  nim: string;
-  kelas?: string;
-  prodi?: string;
+  dosenUid: string;
+  kelas?: string | null;
+  prodi?: string | null;
+  createdAt?: any;
 };
 
-const SEED_MHS: MahasiswaLite[] = [
-  {
-    id: "m1",
-    nama: "Rafi Ramadhan",
-    nim: "231234567",
-    kelas: "IF-1A",
-    prodi: "Informatika",
-  },
-  {
-    id: "m2",
-    nama: "Nadia Putri",
-    nim: "231234568",
-    kelas: "IF-1A",
-    prodi: "Informatika",
-  },
-];
+type StudentRow = {
+  uid: string;
+  nama: string;
+  email: string;
+  nim?: string | null; // optional, tidak ada di UserLite, hanya data mahasiswa
+  kelas?: string | null;
+  prodi?: string | null;
+  createdAt?: any;
+};
+
+function formatISO(d: Date) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+/** secondary auth singleton */
+let _secondaryApp: FirebaseApp | null = null;
+let _secondaryAuth: Auth | null = null;
+function getSecondaryAuth() {
+  if (!_secondaryApp)
+    _secondaryApp = initializeApp(firebaseConfig, "secondary");
+  if (!_secondaryAuth) _secondaryAuth = getAuth(_secondaryApp);
+  return _secondaryAuth;
+}
 
 export default function DosenPage({
   user,
@@ -34,43 +77,703 @@ export default function DosenPage({
   user: UserLite;
   onLogout: () => void;
 }) {
-  const mahasiswa = SEED_MHS;
+  /** =========================
+   * 0) CHECKIN/CHECKOUT dosen
+   * ========================= */
+  const [staffSaving, setStaffSaving] = useState(false);
+  const [staffError, setStaffError] = useState<string | null>(null);
+  const todayISO = formatISO(new Date());
+  const staffDocId = `${user.id}_${todayISO}`;
+
+  async function handleCheckIn() {
+    try {
+      setStaffSaving(true);
+      setStaffError(null);
+      await setDoc(
+        doc(db, "staff_attendance", staffDocId),
+        {
+          uid: user.id,
+          role: "dosen",
+          tanggalISO: todayISO,
+          checkInAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+    } catch (e: any) {
+      setStaffError(e?.message || "Gagal check-in. Cek Firestore Rules.");
+    } finally {
+      setStaffSaving(false);
+    }
+  }
+
+  async function handleCheckOut() {
+    try {
+      setStaffSaving(true);
+      setStaffError(null);
+      await updateDoc(doc(db, "staff_attendance", staffDocId), {
+        checkOutAt: serverTimestamp(),
+      });
+    } catch (e: any) {
+      setStaffError(
+        e?.message ||
+          "Gagal check-out. Pastikan sudah check-in dan rules mengizinkan update."
+      );
+    } finally {
+      setStaffSaving(false);
+    }
+  }
+
+  /** =========================
+   * 1) COURSES milik dosen
+   * ========================= */
+  const [courses, setCourses] = useState<Course[]>([]);
+  const [loadingCourses, setLoadingCourses] = useState(true);
+  const [coursesErr, setCoursesErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    setLoadingCourses(true);
+    setCoursesErr(null);
+
+    const q = query(
+      collection(db, "courses"),
+      where("dosenUid", "==", user.id),
+      orderBy("createdAt", "desc")
+    );
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const rows: Course[] = snap.docs.map((d) => {
+          const data = d.data() as any;
+          return {
+            id: d.id,
+            nama: data.nama || "",
+            dosenUid: data.dosenUid || "",
+            kelas: data.kelas ?? null,
+            prodi: data.prodi ?? null,
+            createdAt: data.createdAt,
+          };
+        });
+        setCourses(rows);
+        setLoadingCourses(false);
+      },
+      (err) => {
+        console.error("courses snapshot error:", err);
+        setCoursesErr(err?.message || "Gagal load mata kuliah.");
+        setLoadingCourses(false);
+      }
+    );
+
+    return () => unsub();
+  }, [user.id]);
+
+  /** =========================
+   * 2) Modal: tambah course
+   * ========================= */
+  const [openCourse, setOpenCourse] = useState(false);
+  const [courseNama, setCourseNama] = useState("");
+  const [courseKelas, setCourseKelas] = useState("");
+  const [courseProdi, setCourseProdi] = useState("");
+  const [courseSaving, setCourseSaving] = useState(false);
+  const [courseErr, setCourseErr] = useState<string | null>(null);
+
+  async function saveCourse() {
+    const nama = courseNama.trim();
+    if (nama.length < 3) {
+      setCourseErr("Nama mata kuliah minimal 3 karakter.");
+      return;
+    }
+
+    try {
+      setCourseSaving(true);
+      setCourseErr(null);
+
+      await addDoc(collection(db, "courses"), {
+        nama,
+        dosenUid: user.id,
+        kelas: courseKelas.trim() || null,
+        prodi: courseProdi.trim() || null,
+        createdAt: serverTimestamp(),
+      });
+
+      setOpenCourse(false);
+      setCourseNama("");
+      setCourseKelas("");
+      setCourseProdi("");
+    } catch (e: any) {
+      setCourseErr(e?.message || "Gagal simpan mata kuliah.");
+    } finally {
+      setCourseSaving(false);
+    }
+  }
+
+  /** =========================
+   * 3) Modal: tambah mahasiswa + assign course
+   * ========================= */
+  const [openMhs, setOpenMhs] = useState(false);
+  const [pickCourseId, setPickCourseId] = useState<string>("");
+  const pickedCourse = useMemo(
+    () => courses.find((c) => c.id === pickCourseId),
+    [courses, pickCourseId]
+  );
+
+  const [mhsNama, setMhsNama] = useState("");
+  const [mhsEmail, setMhsEmail] = useState("");
+  const [mhsPass, setMhsPass] = useState("");
+  const [mhsNim, setMhsNim] = useState("");
+  const [mhsKelas, setMhsKelas] = useState("");
+  const [mhsProdi, setMhsProdi] = useState("");
+
+  const [mhsSaving, setMhsSaving] = useState(false);
+  const [mhsErr, setMhsErr] = useState<string | null>(null);
+
+  const canSubmitMhs = useMemo(() => {
+    return (
+      !!pickedCourse &&
+      mhsNama.trim().length >= 3 &&
+      mhsEmail.trim().includes("@") &&
+      mhsPass.trim().length >= 6
+    );
+  }, [pickedCourse, mhsNama, mhsEmail, mhsPass]);
+
+  function resetMhsForm() {
+    setPickCourseId("");
+    setMhsNama("");
+    setMhsEmail("");
+    setMhsPass("");
+    setMhsNim("");
+    setMhsKelas("");
+    setMhsProdi("");
+    setMhsErr(null);
+  }
+
+  async function saveMahasiswaAndAssign() {
+    if (!pickedCourse) {
+      setMhsErr("Pilih mata kuliah dulu.");
+      return;
+    }
+
+    const nama = mhsNama.trim();
+    const email = mhsEmail.trim().toLowerCase();
+    const password = mhsPass.trim();
+
+    if (nama.length < 3) return setMhsErr("Nama minimal 3 karakter.");
+    if (!email.includes("@")) return setMhsErr("Email tidak valid.");
+    if (password.length < 6) return setMhsErr("Password minimal 6 karakter.");
+
+    try {
+      setMhsSaving(true);
+      setMhsErr(null);
+
+      // 1) create auth user mahasiswa (secondary auth)
+      const secAuth = getSecondaryAuth();
+      const cred = await createUserWithEmailAndPassword(
+        secAuth,
+        email,
+        password
+      );
+      const mhsUid = cred.user.uid;
+
+      // 2) profile users/{uid}
+      await setDoc(doc(db, "users", mhsUid), {
+        email,
+        name: nama,
+        role: "mahasiswa",
+        kelas: mhsKelas.trim() || pickedCourse.kelas || null,
+        prodi: mhsProdi.trim() || pickedCourse.prodi || null,
+        nim: mhsNim.trim() || null,
+        createdAt: serverTimestamp(),
+        createdBy: user.id,
+      });
+
+      // 3) enrollment (dipakai MahasiswaPage)
+      await setDoc(doc(db, "users", mhsUid, "enrollments", pickedCourse.id), {
+        courseId: pickedCourse.id,
+        courseNama: pickedCourse.nama,
+        dosenUid: user.id,
+        createdAt: serverTimestamp(),
+      });
+
+      // 4) course students list (buat dosen)
+      await setDoc(doc(db, "courses", pickedCourse.id, "students", mhsUid), {
+        uid: mhsUid,
+        nama,
+        email,
+        nim: mhsNim.trim() || null,
+        kelas: mhsKelas.trim() || pickedCourse.kelas || null,
+        prodi: mhsProdi.trim() || pickedCourse.prodi || null,
+        createdAt: serverTimestamp(),
+      });
+
+      setOpenMhs(false);
+      resetMhsForm();
+      alert("Akun mahasiswa berhasil dibuat & di-assign ke mata kuliah.");
+    } catch (e: any) {
+      console.error("create mahasiswa error:", e);
+      setMhsErr(e?.message || "Gagal membuat akun mahasiswa.");
+    } finally {
+      setMhsSaving(false);
+    }
+  }
+
+  /** =========================
+   * 4) List mahasiswa per course
+   * ========================= */
+  const [activeCourseId, setActiveCourseId] = useState<string>("");
+  const activeCourse = useMemo(
+    () => courses.find((c) => c.id === activeCourseId),
+    [courses, activeCourseId]
+  );
+
+  const [students, setStudents] = useState<StudentRow[]>([]);
+  const [studLoading, setStudLoading] = useState(false);
+  const [studErr, setStudErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!activeCourseId) {
+      setStudents([]);
+      return;
+    }
+
+    setStudLoading(true);
+    setStudErr(null);
+
+    const q = query(
+      collection(db, "courses", activeCourseId, "students"),
+      orderBy("createdAt", "desc")
+    );
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const rows: StudentRow[] = snap.docs.map((d) => {
+          const data = d.data() as any;
+          return {
+            uid: data.uid || d.id,
+            nama: data.nama || "",
+            email: data.email || "",
+            nim: data.nim ?? null,
+            kelas: data.kelas ?? null,
+            prodi: data.prodi ?? null,
+            createdAt: data.createdAt,
+          };
+        });
+        setStudents(rows);
+        setStudLoading(false);
+      },
+      (err) => {
+        console.error("students snapshot error:", err);
+        setStudErr(err?.message || "Gagal load mahasiswa.");
+        setStudLoading(false);
+      }
+    );
+
+    return () => unsub();
+  }, [activeCourseId]);
+
+  async function removeStudent(studentUid: string) {
+    if (!activeCourseId) return;
+    const ok = confirm("Hapus mahasiswa dari mata kuliah ini?");
+    if (!ok) return;
+
+    try {
+      await deleteDoc(
+        doc(db, "courses", activeCourseId, "students", studentUid)
+      );
+      // jika mau sekalian hapus enrollment:
+      // await deleteDoc(doc(db, "users", studentUid, "enrollments", activeCourseId));
+    } catch (e: any) {
+      alert(e?.message || "Gagal hapus mahasiswa.");
+    }
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <Topbar name={user.name} role={user.role} onLogout={onLogout} />
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8">
+
+      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-6">
+        {/* CHECKIN/CHECKOUT */}
         <section className="rounded-2xl border bg-white p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-semibold">Mahasiswa Bimbingan</h2>
-            <button className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700">
-              <Plus className="w-4 h-4" /> Tambah Mahasiswa
-            </button>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="font-semibold">Absensi Dosen</h2>
+              <p className="text-sm text-slate-600">
+                Check-in & check-out (Firestore: <code>staff_attendance</code>)
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={handleCheckIn}
+                disabled={staffSaving}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+              >
+                {staffSaving ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <LogIn className="w-4 h-4" />
+                )}
+                Check-in
+              </button>
+              <button
+                onClick={handleCheckOut}
+                disabled={staffSaving}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800 text-white hover:bg-slate-900 disabled:opacity-60"
+              >
+                {staffSaving ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <LogOut className="w-4 h-4" />
+                )}
+                Check-out
+              </button>
+            </div>
           </div>
-          <div className="overflow-x-auto">
-            <table className="min-w-full text-sm">
-              <thead className="bg-slate-50 text-slate-600">
-                <tr>
-                  <th className="text-left p-2">Nama</th>
-                  <th className="text-left p-2">NIM</th>
-                  <th className="text-left p-2">Kelas</th>
-                  <th className="text-left p-2">Prodi</th>
-                </tr>
-              </thead>
-              <tbody>
-                {mahasiswa.map((m) => (
-                  <tr key={m.id} className="border-t">
-                    <td className="p-2">{m.nama}</td>
-                    <td className="p-2">{m.nim}</td>
-                    <td className="p-2">{m.kelas}</td>
-                    <td className="p-2">{m.prodi}</td>
-                  </tr>
+          {staffError && (
+            <div className="mt-3 text-sm text-red-600">{staffError}</div>
+          )}
+        </section>
+
+        {/* COURSES */}
+        <section className="rounded-2xl border bg-white p-5">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h2 className="font-semibold mb-1">Mata Kuliah</h2>
+              <p className="text-sm text-slate-600">
+                Buat mata kuliah yang kamu ajar, lalu assign mahasiswa.
+              </p>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setOpenCourse(true)}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700"
+              >
+                <Plus className="w-4 h-4" /> Tambah MK
+              </button>
+
+              <button
+                onClick={() => {
+                  resetMhsForm();
+                  setOpenMhs(true);
+                }}
+                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
+              >
+                <Plus className="w-4 h-4" /> Tambah Mahasiswa
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-5">
+            {loadingCourses ? (
+              <div className="text-sm text-slate-500 flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Memuat mata kuliah...
+              </div>
+            ) : coursesErr ? (
+              <div className="text-sm text-red-600">{coursesErr}</div>
+            ) : courses.length === 0 ? (
+              <div className="text-sm text-slate-500">
+                Belum ada mata kuliah.
+              </div>
+            ) : (
+              <div className="grid sm:grid-cols-2 gap-3">
+                {courses.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => setActiveCourseId(c.id)}
+                    className={`text-left rounded-2xl border p-4 hover:bg-slate-50 ${
+                      activeCourseId === c.id
+                        ? "border-indigo-300 bg-indigo-50/30"
+                        : ""
+                    }`}
+                  >
+                    <div className="font-semibold">{c.nama}</div>
+                    <div className="text-sm text-slate-600">
+                      {c.kelas ?? "-"} • {c.prodi ?? "-"}
+                    </div>
+                    {activeCourseId === c.id && (
+                      <div className="mt-2 inline-flex items-center gap-2 text-xs text-indigo-700">
+                        <CheckCircle2 className="w-4 h-4" /> Dipilih
+                      </div>
+                    )}
+                  </button>
                 ))}
-              </tbody>
-            </table>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* STUDENTS */}
+        <section className="rounded-2xl border bg-white p-5">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="font-semibold">Mahasiswa untuk Mata Kuliah</h2>
+              <p className="text-sm text-slate-600">
+                {activeCourse ? (
+                  <>
+                    <span className="font-medium">{activeCourse.nama}</span> •{" "}
+                    {activeCourse.kelas ?? "-"} • {activeCourse.prodi ?? "-"}
+                  </>
+                ) : (
+                  "Pilih mata kuliah dulu."
+                )}
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-4">
+            {!activeCourseId ? (
+              <div className="text-sm text-slate-500">
+                Belum memilih mata kuliah.
+              </div>
+            ) : studLoading ? (
+              <div className="text-sm text-slate-500 flex items-center gap-2">
+                <Loader2 className="w-4 h-4 animate-spin" />
+                Memuat mahasiswa...
+              </div>
+            ) : studErr ? (
+              <div className="text-sm text-red-600">{studErr}</div>
+            ) : students.length === 0 ? (
+              <div className="text-sm text-slate-500">
+                Belum ada mahasiswa di mata kuliah ini.
+              </div>
+            ) : (
+              <div className="divide-y">
+                {students.map((s) => (
+                  <div key={s.uid} className="py-3 flex items-start gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-medium truncate">{s.nama}</div>
+                      <div className="text-sm text-slate-600 truncate">
+                        {s.email}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-1">
+                        {s.nim ? `NIM: ${s.nim}` : ""}
+                        {s.kelas ? ` • ${s.kelas}` : ""}
+                        {s.prodi ? ` • ${s.prodi}` : ""}
+                      </div>
+                    </div>
+
+                    <button
+                      onClick={() => removeStudent(s.uid)}
+                      className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border hover:bg-slate-50 text-slate-700"
+                      title="Hapus dari MK"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                      <span className="text-sm">Hapus</span>
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </section>
       </main>
+
+      {/* MODAL: ADD COURSE */}
+      {openCourse && (
+        <Modal title="Tambah Mata Kuliah" onClose={() => setOpenCourse(false)}>
+          <div className="grid gap-3">
+            <Field label="Nama Mata Kuliah">
+              <input
+                value={courseNama}
+                onChange={(e) => setCourseNama(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500/30"
+                placeholder="Contoh: Algoritma"
+              />
+            </Field>
+
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Field label="Kelas (opsional)">
+                <input
+                  value={courseKelas}
+                  onChange={(e) => setCourseKelas(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500/30"
+                  placeholder="IF-1A"
+                />
+              </Field>
+              <Field label="Prodi (opsional)">
+                <input
+                  value={courseProdi}
+                  onChange={(e) => setCourseProdi(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500/30"
+                  placeholder="Informatika"
+                />
+              </Field>
+            </div>
+
+            {courseErr && (
+              <div className="text-sm text-red-600">{courseErr}</div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => setOpenCourse(false)}
+                className="px-3 py-2 rounded-xl border hover:bg-slate-50"
+                disabled={courseSaving}
+              >
+                Batal
+              </button>
+              <button
+                onClick={saveCourse}
+                className="px-4 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-60 inline-flex items-center gap-2"
+                disabled={courseSaving}
+              >
+                {courseSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+                Simpan
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* MODAL: ADD MAHASISWA */}
+      {openMhs && (
+        <Modal
+          title="Tambah Mahasiswa (buat akun + assign MK)"
+          onClose={() => setOpenMhs(false)}
+        >
+          <div className="grid gap-3">
+            <Field label="Pilih Mata Kuliah">
+              <select
+                value={pickCourseId}
+                onChange={(e) => setPickCourseId(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+              >
+                <option value="">-- pilih mata kuliah --</option>
+                {courses.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.nama} ({c.kelas ?? "-"} / {c.prodi ?? "-"})
+                  </option>
+                ))}
+              </select>
+            </Field>
+
+            <Field label="Nama Mahasiswa">
+              <input
+                value={mhsNama}
+                onChange={(e) => setMhsNama(e.target.value)}
+                className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                placeholder="Contoh: Rafi Ramadhan"
+              />
+            </Field>
+
+            <div className="grid sm:grid-cols-2 gap-3">
+              <Field label="Email Mahasiswa">
+                <input
+                  value={mhsEmail}
+                  onChange={(e) => setMhsEmail(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  placeholder="rafi@uni.ac.id"
+                />
+              </Field>
+              <Field label="Password (manual dosen)">
+                <input
+                  value={mhsPass}
+                  onChange={(e) => setMhsPass(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  placeholder="min 6 karakter"
+                />
+              </Field>
+            </div>
+
+            <div className="grid sm:grid-cols-3 gap-3">
+              <Field label="NIM (opsional)">
+                <input
+                  value={mhsNim}
+                  onChange={(e) => setMhsNim(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  placeholder="231234567"
+                />
+              </Field>
+              <Field label="Kelas (opsional)">
+                <input
+                  value={mhsKelas}
+                  onChange={(e) => setMhsKelas(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  placeholder="IF-1A"
+                />
+              </Field>
+              <Field label="Prodi (opsional)">
+                <input
+                  value={mhsProdi}
+                  onChange={(e) => setMhsProdi(e.target.value)}
+                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                  placeholder="Informatika"
+                />
+              </Field>
+            </div>
+
+            <div className="text-xs text-slate-500">
+              Password hanya untuk login mahasiswa. Sistem tidak menyimpan
+              password di Firestore.
+            </div>
+
+            {mhsErr && <div className="text-sm text-red-600">{mhsErr}</div>}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => setOpenMhs(false)}
+                className="px-3 py-2 rounded-xl border hover:bg-slate-50"
+                disabled={mhsSaving}
+              >
+                Batal
+              </button>
+              <button
+                onClick={saveMahasiswaAndAssign}
+                className="px-4 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60 inline-flex items-center gap-2"
+                disabled={!canSubmitMhs || mhsSaving}
+              >
+                {mhsSaving && <Loader2 className="w-4 h-4 animate-spin" />}
+                Buat Akun & Assign
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+/** UI helpers */
+function Modal({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
+      <div className="w-full max-w-xl rounded-2xl bg-white border shadow-xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b">
+          <div className="font-semibold">{title}</div>
+          <button
+            onClick={onClose}
+            className="p-2 rounded-lg hover:bg-slate-100"
+            aria-label="close"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="px-5 py-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <div className="text-sm font-medium text-slate-700 mb-1">{label}</div>
+      {children}
     </div>
   );
 }

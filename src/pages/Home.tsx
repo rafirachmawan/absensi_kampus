@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   GraduationCap,
   ShieldCheck,
@@ -8,66 +8,10 @@ import {
   EyeOff,
   AlertTriangle,
 } from "lucide-react";
-import type { UserLite } from "../types";
+import { signInWithEmailAndPassword } from "firebase/auth";
+import { auth } from "../lib/firebase";
 
-// ==== DUMMY ACCOUNTS (email / password / role -> user object) ====
-type DummyAccount = {
-  email: string;
-  password: string;
-  user: UserLite;
-};
-
-const DUMMY_ACCOUNTS: DummyAccount[] = [
-  {
-    email: "admin@uni.ac.id",
-    password: "admin123",
-    user: {
-      id: "u-admin",
-      role: "superadmin",
-      name: "Super Admin",
-      email: "admin@uni.ac.id",
-    },
-  },
-  {
-    email: "dosen@uni.ac.id",
-    password: "dosen123",
-    user: {
-      id: "u-dosen",
-      role: "dosen",
-      name: "Dr. Siti Rahma",
-      email: "dosen@uni.ac.id",
-    },
-  },
-  // KARYAWAN (baru)
-  {
-    email: "staff@uni.ac.id",
-    password: "staff123",
-    user: {
-      id: "u-staff",
-      role: "karyawan",
-      name: "Rafi Ramadhan",
-      email: "staff@uni.ac.id",
-    },
-  },
-  {
-    email: "mhs001@uni.ac.id",
-    password: "mhs123",
-    user: {
-      id: "u-mhs",
-      role: "mahasiswa",
-      name: "Rafi Ramadhan",
-      email: "mhs001@uni.ac.id",
-      kelas: "IF-1A",
-      prodi: "Informatika",
-    },
-  },
-];
-
-export default function Home({
-  onPickUser,
-}: {
-  onPickUser: (u: UserLite) => void;
-}) {
+export default function Home() {
   // ---- state form
   const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
@@ -76,54 +20,82 @@ export default function Home({
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // auto-suggest akun dari email
+  // status info (biar jelas login sukses walau app.tsx belum pindah)
+  const [info, setInfo] = useState<string | null>(null);
+
+  // (opsional) auto-suggest role hanya berdasarkan email demo yang kamu pakai
   const suggestedRole = useMemo(() => {
-    const found = DUMMY_ACCOUNTS.find(
-      (a) => a.email.toLowerCase() === email.toLowerCase()
-    );
-    return found?.user.role ?? null;
+    const e = email.toLowerCase().trim();
+    if (e === "admin@uni.ac.id") return "superadmin";
+    if (e === "dosen@uni.ac.id") return "dosen";
+    if (e === "staff@uni.ac.id") return "karyawan";
+    if (e === "mhs001@uni.ac.id") return "mahasiswa";
+    return null;
   }, [email]);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
+    if (submitting) return;
+
     setError(null);
+    setInfo(null);
     setSubmitting(true);
 
-    // simulasi cek kredensial dummy
-    const found = DUMMY_ACCOUNTS.find(
-      (a) => a.email.toLowerCase() === email.toLowerCase() && a.password === pw
-    );
-    await new Promise((r) => setTimeout(r, 450)); // animasi loading ringan
+    const cleanEmail = email.trim().toLowerCase();
 
-    setSubmitting(false);
-    if (!found) {
-      setError(
-        "Email atau password salah. Coba: admin@uni.ac.id/admin123, dosen@uni.ac.id/dosen123, staff@uni.ac.id/staff123, mhs001@uni.ac.id/mhs123"
-      );
-      return;
-    }
-
-    // “remember me” dummy (opsional)
     try {
-      if (remember)
-        localStorage.setItem("siakad-ui-last-login", JSON.stringify({ email }));
-      else localStorage.removeItem("siakad-ui-last-login");
-    } catch {}
+      const cred = await signInWithEmailAndPassword(auth, cleanEmail, pw);
 
-    onPickUser(found.user);
+      // ✅ debug login sukses
+      console.log("✅ LOGIN OK", {
+        uid: cred.user.uid,
+        email: cred.user.email,
+      });
+
+      setInfo(`Login sukses: ${cred.user.email} (uid: ${cred.user.uid})`);
+
+      // remember email (opsional)
+      try {
+        if (remember)
+          localStorage.setItem(
+            "siakad-ui-last-login",
+            JSON.stringify({ email: cleanEmail })
+          );
+        else localStorage.removeItem("siakad-ui-last-login");
+      } catch {}
+
+      // sukses login -> App.tsx akan otomatis pindah halaman (nanti kita bereskan)
+    } catch (err: any) {
+      console.error("❌ LOGIN FAIL", err);
+
+      const code = err?.code as string | undefined;
+
+      let msg = "Login gagal. Coba lagi.";
+      if (code === "auth/invalid-credential")
+        msg = "Email atau password salah.";
+      else if (code === "auth/user-not-found") msg = "Akun tidak ditemukan.";
+      else if (code === "auth/wrong-password") msg = "Password salah.";
+      else if (code === "auth/too-many-requests")
+        msg = "Terlalu banyak percobaan. Coba lagi beberapa saat.";
+      else if (code === "auth/network-request-failed")
+        msg = "Koneksi bermasalah. Coba cek internet.";
+      else if (err?.message) msg = String(err.message);
+
+      setError(msg);
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   // muat email tersimpan (opsional)
-  useMemo(() => {
+  useEffect(() => {
     try {
       const raw = localStorage.getItem("siakad-ui-last-login");
       if (raw) {
-        const { email: last } = JSON.parse(raw);
-        if (last) setEmail(last);
+        const parsed = JSON.parse(raw);
+        if (parsed?.email) setEmail(parsed.email);
       }
     } catch {}
-    // jalankan sekali
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   return (
@@ -258,6 +230,14 @@ export default function Home({
                 <span className="opacity-70">Lupa password?</span>
               </div>
 
+              {/* ✅ info sukses login */}
+              {info && (
+                <div className="flex items-start gap-2 rounded-xl border border-emerald-400/40 bg-emerald-400/10 p-3 text-sm">
+                  <span className="mt-0.5">✅</span>
+                  <p className="break-all">{info}</p>
+                </div>
+              )}
+
               {error && (
                 <div className="flex items-start gap-2 rounded-xl border border-red-400/40 bg-red-400/10 p-3 text-sm">
                   <AlertTriangle className="w-4 h-4 mt-0.5" />
@@ -293,6 +273,11 @@ export default function Home({
                     <code>mhs123</code>
                   </li>
                 </ul>
+                <p className="mt-2 opacity-80">
+                  Pastikan akun tersebut sudah dibuat di Firebase
+                  Authentication, dan profilnya ada di Firestore{" "}
+                  <code>users/&lt;uid&gt;</code>.
+                </p>
               </div>
             </form>
           </div>
