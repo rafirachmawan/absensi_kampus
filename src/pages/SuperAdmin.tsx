@@ -11,6 +11,7 @@ import {
   Mail,
   Ban,
   CheckCircle2,
+  User as UserIcon,
 } from "lucide-react";
 import type { UserLite } from "../types";
 
@@ -26,6 +27,7 @@ import {
   serverTimestamp,
   updateDoc,
   setDoc,
+  getDoc,
 } from "firebase/firestore";
 import {
   createUserWithEmailAndPassword,
@@ -66,10 +68,26 @@ type UserRow = {
   disabled?: boolean;
   disabledAt?: any;
   disabledBy?: string | null;
+
+  // ✅ username login (opsi B)
+  username?: string | null;
 };
 
 function cx(...a: Array<string | false | null | undefined>) {
   return a.filter(Boolean).join(" ");
+}
+
+function sanitizeUsername(raw: string) {
+  return raw
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[^a-z0-9._-]/g, ""); // aman untuk docId
+}
+
+function usernameFromEmail(email: string) {
+  const left = String(email || "").split("@")[0] || "";
+  return sanitizeUsername(left);
 }
 
 export default function SuperAdminPage({
@@ -96,6 +114,9 @@ export default function SuperAdminPage({
   const [fakultas, setFakultas] = useState("");
   const [prodi, setProdi] = useState("");
 
+  // ✅ username login (opsi B) -> default dari email sebelum @
+  const [username, setUsername] = useState("");
+
   const [buatAkun, setBuatAkun] = useState(false);
   const [passwordAkun, setPasswordAkun] = useState("");
 
@@ -105,11 +126,26 @@ export default function SuperAdminPage({
   const canSubmit = useMemo(() => {
     const n = nama.trim();
     const e = email.trim().toLowerCase();
+    const u = sanitizeUsername(username);
     const baseOk = n.length >= 3 && e.includes("@") && e.includes(".");
     if (!baseOk) return false;
-    if (buatAkun) return passwordAkun.trim().length >= 6;
+    if (buatAkun) return passwordAkun.trim().length >= 6 && u.length >= 3;
     return true;
-  }, [nama, email, buatAkun, passwordAkun]);
+  }, [nama, email, buatAkun, passwordAkun, username]);
+
+  // auto isi username saat email diubah (hanya kalau username masih kosong / sama seperti auto)
+  useEffect(() => {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!cleanEmail.includes("@")) return;
+    const auto = usernameFromEmail(cleanEmail);
+    // kalau user belum isi username manual, sync otomatis
+    if (
+      !username.trim() ||
+      usernameFromEmail(cleanEmail) === sanitizeUsername(username)
+    ) {
+      setUsername(auto);
+    }
+  }, [email]); // eslint-disable-line
 
   useEffect(() => {
     setLoadingList(true);
@@ -159,6 +195,7 @@ export default function SuperAdminPage({
     setNidn("");
     setFakultas("");
     setProdi("");
+    setUsername("");
     setBuatAkun(false);
     setPasswordAkun("");
     setFormError(null);
@@ -174,11 +211,18 @@ export default function SuperAdminPage({
     const cleanFak = fakultas.trim();
     const cleanProdi = prodi.trim();
     const cleanPw = passwordAkun.trim();
+    const cleanUsername = sanitizeUsername(
+      username || usernameFromEmail(cleanEmail)
+    );
 
     if (cleanNama.length < 3) return setFormError("Nama minimal 3 karakter.");
     if (!cleanEmail.includes("@")) return setFormError("Email tidak valid.");
-    if (buatAkun && cleanPw.length < 6)
-      return setFormError("Password minimal 6 karakter.");
+    if (buatAkun) {
+      if (cleanPw.length < 6)
+        return setFormError("Password minimal 6 karakter.");
+      if (cleanUsername.length < 3)
+        return setFormError("Username minimal 3 karakter.");
+    }
 
     try {
       setSaving(true);
@@ -199,6 +243,17 @@ export default function SuperAdminPage({
 
       // 2) opsional buat akun login
       if (buatAkun) {
+        // ✅ cek username unik (gratis, via Firestore)
+        const unameRef = doc(db, "usernames", cleanUsername);
+        const unameSnap = await getDoc(unameRef);
+        if (unameSnap.exists()) {
+          setFormError(
+            `Username "${cleanUsername}" sudah dipakai. Ganti username.`
+          );
+          setSaving(false);
+          return;
+        }
+
         const secondaryAuth = createSecondaryAuth();
         const cred = await createUserWithEmailAndPassword(
           secondaryAuth,
@@ -207,6 +262,7 @@ export default function SuperAdminPage({
         );
         const newUid = cred.user.uid;
 
+        // ✅ users/{uid}
         await setDoc(doc(db, "users", newUid), {
           email: cleanEmail,
           name: cleanNama,
@@ -215,12 +271,25 @@ export default function SuperAdminPage({
           prodi: cleanProdi || null,
           createdAt: serverTimestamp(),
           createdBy: user.id,
+
           // ✅ default aktif
           disabled: false,
           disabledAt: null,
           disabledBy: null,
+
+          // ✅ username untuk login
+          username: cleanUsername,
         });
 
+        // ✅ usernames/{username} -> uid (dipakai login)
+        await setDoc(doc(db, "usernames", cleanUsername), {
+          uid: newUid,
+          email: cleanEmail,
+          createdAt: serverTimestamp(),
+          createdBy: user.id,
+        });
+
+        // ✅ update master_dosen supaya sinkron
         await updateDoc(doc(db, "master_dosen", masterRef.id), {
           loginActive: true,
           authUid: newUid,
@@ -241,11 +310,7 @@ export default function SuperAdminPage({
         setFormError("Format email tidak valid.");
       else if (code.includes("auth/weak-password"))
         setFormError("Password terlalu lemah (minimal 6 karakter).");
-      else
-        setFormError(
-          e?.message ||
-            "Gagal menyimpan. Cek Firestore Rules & pastikan login superadmin."
-        );
+      else setFormError(e?.message || "Gagal menyimpan. Cek Firestore Rules.");
     } finally {
       setSaving(false);
     }
@@ -279,6 +344,9 @@ export default function SuperAdminPage({
   const [editKelas, setEditKelas] = useState("");
   const [editNim, setEditNim] = useState("");
 
+  // ✅ edit username
+  const [editUsername, setEditUsername] = useState("");
+
   const [editSaving, setEditSaving] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
 
@@ -310,6 +378,7 @@ export default function SuperAdminPage({
             disabled: Boolean(data.disabled),
             disabledAt: data.disabledAt ?? null,
             disabledBy: data.disabledBy ?? null,
+            username: data.username ?? null,
           };
         });
         setUsers(rows);
@@ -334,6 +403,7 @@ export default function SuperAdminPage({
     setEditProdi(String(u.prodi ?? ""));
     setEditKelas(String(u.kelas ?? ""));
     setEditNim(String(u.nim ?? ""));
+    setEditUsername(String(u.username ?? usernameFromEmail(u.email)));
     setEditError(null);
     setOpenEdit(true);
   }
@@ -343,13 +413,60 @@ export default function SuperAdminPage({
 
     const name = editName.trim();
     const email = editEmail.trim().toLowerCase();
+    const uname = sanitizeUsername(editUsername);
+
     if (name.length < 3) return setEditError("Nama minimal 3 karakter.");
     if (!email.includes("@")) return setEditError("Email tidak valid.");
+    if (uname.length < 3) return setEditError("Username minimal 3 karakter.");
 
     try {
       setEditSaving(true);
       setEditError(null);
 
+      // ✅ handle ganti username: update mapping usernames/{username}
+      const userRef = doc(db, "users", editUid);
+      const currentSnap = await getDoc(userRef);
+      const currentUsername = sanitizeUsername(
+        String(currentSnap.data()?.username || "")
+      );
+
+      if (currentUsername && currentUsername !== uname) {
+        // cek username baru tersedia
+        const newRef = doc(db, "usernames", uname);
+        const newSnap = await getDoc(newRef);
+        if (newSnap.exists()) {
+          setEditError(`Username "${uname}" sudah dipakai. Pilih yang lain.`);
+          setEditSaving(false);
+          return;
+        }
+
+        // buat mapping baru
+        await setDoc(doc(db, "usernames", uname), {
+          uid: editUid,
+          email,
+          createdAt: serverTimestamp(),
+          createdBy: user.id,
+        });
+
+        // hapus mapping lama (kalau ada)
+        try {
+          await deleteDoc(doc(db, "usernames", currentUsername));
+        } catch {}
+      } else if (!currentUsername) {
+        // kalau sebelumnya belum ada mapping, bikin
+        const newRef = doc(db, "usernames", uname);
+        const newSnap = await getDoc(newRef);
+        if (!newSnap.exists()) {
+          await setDoc(newRef, {
+            uid: editUid,
+            email,
+            createdAt: serverTimestamp(),
+            createdBy: user.id,
+          });
+        }
+      }
+
+      // ✅ update profile Firestore (ini yang dipakai App.tsx untuk routing)
       await updateDoc(doc(db, "users", editUid), {
         name,
         email,
@@ -358,6 +475,7 @@ export default function SuperAdminPage({
         prodi: editProdi.trim() || null,
         kelas: editKelas.trim() || null,
         nim: editNim.trim() || null,
+        username: uname,
       });
 
       setOpenEdit(false);
@@ -429,6 +547,15 @@ export default function SuperAdminPage({
 
     try {
       setBusyUid(u.id);
+
+      // hapus username mapping juga biar rapi
+      const uname = sanitizeUsername(String(u.username || ""));
+      if (uname) {
+        try {
+          await deleteDoc(doc(db, "usernames", uname));
+        } catch {}
+      }
+
       await deleteDoc(doc(db, "users", u.id));
       alert("✅ Profil Firestore terhapus.");
     } catch (e: any) {
@@ -471,6 +598,7 @@ export default function SuperAdminPage({
               <div className="grid gap-3">
                 {users.map((u) => {
                   const busy = busyUid === u.id;
+                  const uname = u.username || usernameFromEmail(u.email);
                   return (
                     <div
                       key={u.id}
@@ -504,12 +632,23 @@ export default function SuperAdminPage({
                           {u.email}
                         </div>
 
-                        <div className="mt-1 text-xs text-slate-500">
-                          UID: <span className="text-slate-400">{u.id}</span>
-                          {u.fakultas ? ` • Fakultas: ${u.fakultas}` : ""}
-                          {u.prodi ? ` • Prodi: ${u.prodi}` : ""}
-                          {u.kelas ? ` • Kelas: ${u.kelas}` : ""}
-                          {u.nim ? ` • NIM: ${u.nim}` : ""}
+                        <div className="mt-1 text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-1">
+                          <span>
+                            UID: <span className="text-slate-400">{u.id}</span>
+                          </span>
+                          <span className="inline-flex items-center gap-1">
+                            <UserIcon className="w-3.5 h-3.5 text-slate-400" />
+                            Username:{" "}
+                            <span className="font-medium text-slate-700">
+                              {uname}
+                            </span>
+                          </span>
+                          {u.fakultas ? (
+                            <span>Fakultas: {u.fakultas}</span>
+                          ) : null}
+                          {u.prodi ? <span>Prodi: {u.prodi}</span> : null}
+                          {u.kelas ? <span>Kelas: {u.kelas}</span> : null}
+                          {u.nim ? <span>NIM: {u.nim}</span> : null}
                         </div>
                       </div>
 
@@ -551,7 +690,6 @@ export default function SuperAdminPage({
                           {u.disabled ? "Aktifkan" : "Disable"}
                         </button>
 
-                        {/* opsional: hapus profile Firestore saja */}
                         <button
                           onClick={() => deleteProfileOnly(u)}
                           disabled={busy}
@@ -673,6 +811,7 @@ export default function SuperAdminPage({
             App.tsx).
             <br />- Tombol <b>Hapus Profil</b> hanya menghapus dokumen
             Firestore, akun Auth tetap ada.
+            <br />- Login username memakai koleksi <code>usernames</code>.
           </div>
         </section>
       </main>
@@ -716,6 +855,19 @@ export default function SuperAdminPage({
                     className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-purple-500/30"
                     placeholder="budi@uni.ac.id"
                   />
+                </Field>
+
+                {/* ✅ Username login */}
+                <Field label="Username Login (untuk masuk nanti)">
+                  <input
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-purple-500/30"
+                    placeholder="contoh: budi / dosen01 / staff1"
+                  />
+                  <div className="mt-1 text-xs text-slate-500">
+                    Default diambil dari email sebelum @. Username harus unik.
+                  </div>
                 </Field>
 
                 <Field label="Role">
@@ -861,6 +1013,20 @@ export default function SuperAdminPage({
                   <div className="mt-1 text-xs text-slate-500">
                     Ini mengubah email di dokumen Firestore (profile), bukan
                     email login Auth.
+                  </div>
+                </Field>
+
+                {/* ✅ Username edit */}
+                <Field label="Username Login">
+                  <input
+                    value={editUsername}
+                    onChange={(e) => setEditUsername(e.target.value)}
+                    className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                    placeholder="contoh: admin / dosen01 / staff1"
+                  />
+                  <div className="mt-1 text-xs text-slate-500">
+                    Jika username diubah, mapping <code>usernames</code> juga
+                    diupdate otomatis.
                   </div>
                 </Field>
 
