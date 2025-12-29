@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Topbar from "../components/Topbar";
 import type { UserLite } from "../types";
 import {
@@ -9,6 +9,10 @@ import {
   CheckCircle2,
   LogIn,
   LogOut,
+  Camera,
+  MapPin,
+  Check,
+  RefreshCw,
 } from "lucide-react";
 
 import { db, firebaseConfig } from "../lib/firebase";
@@ -70,6 +74,41 @@ function getSecondaryAuth() {
   return _secondaryAuth;
 }
 
+/** ===== helpers: geolocation + camera (tanpa ubah logika lain) ===== */
+function getBrowserPosition(): Promise<{
+  lat: number;
+  lng: number;
+  accuracy: number | null;
+}> {
+  return new Promise((resolve, reject) => {
+    if (!("geolocation" in navigator)) {
+      reject(new Error("Browser tidak mendukung geolocation."));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        resolve({
+          lat: pos.coords.latitude,
+          lng: pos.coords.longitude,
+          accuracy:
+            typeof pos.coords.accuracy === "number"
+              ? pos.coords.accuracy
+              : null,
+        });
+      },
+      (err) => {
+        reject(
+          new Error(
+            err?.message ||
+              "Gagal mengambil lokasi. Pastikan izin Location di browser sudah di-allow."
+          )
+        );
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+  });
+}
+
 export default function DosenPage({
   user,
   onLogout,
@@ -79,16 +118,151 @@ export default function DosenPage({
 }) {
   /** =========================
    * 0) CHECKIN/CHECKOUT dosen
+   * (ditambah: foto + lokasi via modal, tanpa mengubah flow course/mhs)
    * ========================= */
   const [staffSaving, setStaffSaving] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
+  const [staffInfo, setStaffInfo] = useState<string | null>(null);
+
   const todayISO = formatISO(new Date());
   const staffDocId = `${user.id}_${todayISO}`;
 
-  async function handleCheckIn() {
+  // modal checkin (foto+lokasi)
+  const [openCheckIn, setOpenCheckIn] = useState(false);
+  const [locLoading, setLocLoading] = useState(false);
+  const [loc, setLoc] = useState<{
+    lat: number;
+    lng: number;
+    accuracy: number | null;
+  } | null>(null);
+
+  const [camLoading, setCamLoading] = useState(false);
+  const [camError, setCamError] = useState<string | null>(null);
+  const [photoDataUrl, setPhotoDataUrl] = useState<string | null>(null);
+
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+
+  function resetCheckInModalState() {
+    setLoc(null);
+    setLocLoading(false);
+    setCamLoading(false);
+    setCamError(null);
+    setPhotoDataUrl(null);
+    stopCamera();
+  }
+
+  function stopCamera() {
+    try {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+      }
+    } catch {}
+    streamRef.current = null;
+    if (videoRef.current) {
+      try {
+        // @ts-ignore
+        videoRef.current.srcObject = null;
+      } catch {}
+    }
+  }
+
+  async function openCheckInModal() {
+    setStaffError(null);
+    setStaffInfo(null);
+    resetCheckInModalState();
+    setOpenCheckIn(true);
+  }
+
+  async function requestLocation() {
+    try {
+      setLocLoading(true);
+      setStaffError(null);
+      setStaffInfo(null);
+      const pos = await getBrowserPosition();
+      setLoc(pos);
+      setStaffInfo("✅ Lokasi berhasil diambil.");
+    } catch (e: any) {
+      setStaffError(e?.message || "Gagal ambil lokasi.");
+    } finally {
+      setLocLoading(false);
+    }
+  }
+
+  async function startCamera() {
+    try {
+      setCamLoading(true);
+      setCamError(null);
+      setStaffError(null);
+      setStaffInfo(null);
+
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setCamError("Browser tidak mendukung kamera (getUserMedia).");
+        return;
+      }
+
+      // prefer front camera (untuk selfie absensi)
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user" },
+        audio: false,
+      });
+
+      streamRef.current = stream;
+      if (videoRef.current) {
+        // @ts-ignore
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play().catch(() => {});
+      }
+
+      setStaffInfo("✅ Kamera aktif. Silakan ambil foto.");
+    } catch (e: any) {
+      setCamError(e?.message || "Gagal mengaktifkan kamera. Cek izin kamera.");
+    } finally {
+      setCamLoading(false);
+    }
+  }
+
+  function capturePhoto() {
+    if (!videoRef.current) return;
+    const v = videoRef.current;
+
+    const w = v.videoWidth || 640;
+    const h = v.videoHeight || 480;
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.drawImage(v, 0, 0, w, h);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    setPhotoDataUrl(dataUrl);
+
+    // setelah capture, matikan kamera supaya hemat
+    stopCamera();
+    setStaffInfo("✅ Foto berhasil diambil.");
+  }
+
+  async function handleConfirmCheckIn() {
     try {
       setStaffSaving(true);
       setStaffError(null);
+      setStaffInfo(null);
+
+      // wajib ada lokasi + foto (sesuai kebutuhan kamu)
+      if (!loc) {
+        setStaffError("Ambil lokasi dulu sebelum check-in.");
+        return;
+      }
+      if (!photoDataUrl) {
+        setStaffError("Ambil foto dulu sebelum check-in.");
+        return;
+      }
+
+      // simpan ke Firestore
+      // NOTE: foto disimpan sebagai dataURL untuk sementara (tanpa Firebase Storage).
+      // Kalau kamu sudah siap pakai Firebase Storage, nanti kita ganti photoDataUrl -> photoUrl.
       await setDoc(
         doc(db, "staff_attendance", staffDocId),
         {
@@ -96,10 +270,24 @@ export default function DosenPage({
           role: "dosen",
           tanggalISO: todayISO,
           checkInAt: serverTimestamp(),
+
+          // tambahan (tanpa mengganggu logika lain)
+          lokasi: {
+            lat: loc.lat,
+            lng: loc.lng,
+            accuracy: loc.accuracy,
+          },
+          fotoDataUrl: photoDataUrl,
+          userAgent: navigator.userAgent,
         },
         { merge: true }
       );
+
+      setStaffInfo("✅ Check-in berhasil tersimpan.");
+      setOpenCheckIn(false);
+      resetCheckInModalState();
     } catch (e: any) {
+      console.error("CHECKIN error:", e);
       setStaffError(e?.message || "Gagal check-in. Cek Firestore Rules.");
     } finally {
       setStaffSaving(false);
@@ -110,9 +298,11 @@ export default function DosenPage({
     try {
       setStaffSaving(true);
       setStaffError(null);
+      setStaffInfo(null);
       await updateDoc(doc(db, "staff_attendance", staffDocId), {
         checkOutAt: serverTimestamp(),
       });
+      setStaffInfo("✅ Check-out berhasil tersimpan.");
     } catch (e: any) {
       setStaffError(
         e?.message ||
@@ -122,6 +312,12 @@ export default function DosenPage({
       setStaffSaving(false);
     }
   }
+
+  useEffect(() => {
+    // cleanup camera saat unmount / modal close
+    return () => stopCamera();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /** =========================
    * 1) COURSES milik dosen
@@ -403,7 +599,7 @@ export default function DosenPage({
             </div>
             <div className="flex gap-2">
               <button
-                onClick={handleCheckIn}
+                onClick={openCheckInModal}
                 disabled={staffSaving}
                 className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
               >
@@ -428,8 +624,12 @@ export default function DosenPage({
               </button>
             </div>
           </div>
-          {staffError && (
-            <div className="mt-3 text-sm text-red-600">{staffError}</div>
+
+          {(staffError || staffInfo) && (
+            <div className="mt-3 text-sm">
+              {staffError && <div className="text-red-600">{staffError}</div>}
+              {staffInfo && <div className="text-emerald-700">{staffInfo}</div>}
+            </div>
           )}
         </section>
 
@@ -568,6 +768,186 @@ export default function DosenPage({
           </div>
         </section>
       </main>
+
+      {/* MODAL: CHECK-IN (foto + lokasi) */}
+      {openCheckIn && (
+        <Modal
+          title="Check-in Absensi (Foto + Lokasi)"
+          onClose={() => {
+            setOpenCheckIn(false);
+            resetCheckInModalState();
+          }}
+        >
+          <div className="grid gap-4">
+            {/* lokasi */}
+            <div className="rounded-2xl border bg-slate-50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-800 inline-flex items-center gap-2">
+                    <MapPin className="w-4 h-4" />
+                    Lokasi
+                  </div>
+                  <div className="text-xs text-slate-600 mt-1">
+                    Ambil lokasi untuk validasi absensi.
+                  </div>
+                </div>
+                <button
+                  onClick={requestLocation}
+                  disabled={locLoading || staffSaving}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white border hover:bg-slate-100 disabled:opacity-60"
+                >
+                  {locLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-4 h-4" />
+                  )}
+                  Ambil Lokasi
+                </button>
+              </div>
+
+              {loc && (
+                <div className="mt-3 text-xs text-slate-700">
+                  <div>
+                    <span className="font-medium">Lat:</span> {loc.lat}
+                  </div>
+                  <div>
+                    <span className="font-medium">Lng:</span> {loc.lng}
+                  </div>
+                  <div>
+                    <span className="font-medium">Akurasi:</span>{" "}
+                    {loc.accuracy != null
+                      ? `${Math.round(loc.accuracy)} m`
+                      : "-"}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* kamera */}
+            <div className="rounded-2xl border bg-slate-50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-800 inline-flex items-center gap-2">
+                    <Camera className="w-4 h-4" />
+                    Foto
+                  </div>
+                  <div className="text-xs text-slate-600 mt-1">
+                    Aktifkan kamera lalu ambil foto untuk check-in.
+                  </div>
+                </div>
+                <button
+                  onClick={startCamera}
+                  disabled={camLoading || staffSaving}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white border hover:bg-slate-100 disabled:opacity-60"
+                >
+                  {camLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Camera className="w-4 h-4" />
+                  )}
+                  Buka Kamera
+                </button>
+              </div>
+
+              {camError && (
+                <div className="mt-2 text-xs text-red-600">{camError}</div>
+              )}
+
+              {/* preview camera / photo */}
+              <div className="mt-3 grid gap-3">
+                {!photoDataUrl ? (
+                  <div className="grid gap-2">
+                    <div className="rounded-xl overflow-hidden border bg-black">
+                      <video
+                        ref={videoRef}
+                        className="w-full h-56 object-cover"
+                        playsInline
+                        muted
+                      />
+                    </div>
+
+                    <button
+                      onClick={capturePhoto}
+                      disabled={staffSaving || !streamRef.current}
+                      className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60"
+                    >
+                      <Camera className="w-4 h-4" />
+                      Ambil Foto
+                    </button>
+
+                    <div className="text-[11px] text-slate-500">
+                      Jika video tidak muncul, pastikan izin kamera di browser
+                      sudah Allow.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid gap-2">
+                    <img
+                      src={photoDataUrl}
+                      alt="Foto Check-in"
+                      className="w-full h-56 object-cover rounded-xl border bg-white"
+                    />
+                    <button
+                      onClick={() => {
+                        setPhotoDataUrl(null);
+                        setStaffInfo(null);
+                      }}
+                      disabled={staffSaving}
+                      className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-white border hover:bg-slate-100 disabled:opacity-60"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      Ulang Foto
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* info/error */}
+            {(staffError || staffInfo) && (
+              <div className="text-sm">
+                {staffError && <div className="text-red-600">{staffError}</div>}
+                {staffInfo && (
+                  <div className="text-emerald-700">{staffInfo}</div>
+                )}
+              </div>
+            )}
+
+            {/* tombol simpan */}
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => {
+                  setOpenCheckIn(false);
+                  resetCheckInModalState();
+                }}
+                className="px-3 py-2 rounded-xl border hover:bg-slate-50"
+                disabled={staffSaving}
+              >
+                Batal
+              </button>
+
+              <button
+                onClick={handleConfirmCheckIn}
+                disabled={staffSaving || !loc || !photoDataUrl}
+                className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 inline-flex items-center gap-2"
+              >
+                {staffSaving ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Check className="w-4 h-4" />
+                )}
+                Simpan Check-in
+              </button>
+            </div>
+
+            <div className="text-xs text-slate-500">
+              Catatan: Foto sementara disimpan sebagai <code>fotoDataUrl</code>{" "}
+              di Firestore. Jika kamu mau versi produksi, nanti kita pindah ke
+              Firebase Storage (lebih aman & ringan).
+            </div>
+          </div>
+        </Modal>
+      )}
 
       {/* MODAL: ADD COURSE */}
       {openCourse && (
@@ -746,8 +1126,10 @@ function Modal({
 }) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
-      <div className="w-full max-w-xl rounded-2xl bg-white border shadow-xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b">
+      {/* container modal */}
+      <div className="w-full max-w-xl rounded-2xl bg-white border shadow-xl overflow-hidden flex flex-col max-h-[85vh]">
+        {/* header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b shrink-0">
           <div className="font-semibold">{title}</div>
           <button
             onClick={onClose}
@@ -757,7 +1139,9 @@ function Modal({
             <X className="w-5 h-5" />
           </button>
         </div>
-        <div className="px-5 py-4">{children}</div>
+
+        {/* body (scroll) */}
+        <div className="px-5 py-4 overflow-y-auto flex-1">{children}</div>
       </div>
     </div>
   );
