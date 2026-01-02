@@ -13,6 +13,9 @@ import {
   MapPin,
   Check,
   RefreshCw,
+  LayoutDashboard,
+  BookOpen,
+  Users,
 } from "lucide-react";
 
 import { db, firebaseConfig } from "../lib/firebase";
@@ -109,6 +112,42 @@ function getBrowserPosition(): Promise<{
   });
 }
 
+/** UI helper */
+function cx(...a: Array<string | false | null | undefined>) {
+  return a.filter(Boolean).join(" ");
+}
+
+/** Sidebar item */
+function SideItem({
+  active,
+  icon,
+  label,
+  onClick,
+}: {
+  active?: boolean;
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cx(
+        "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition select-none border",
+        active
+          ? "bg-indigo-50 text-indigo-700 border-indigo-100"
+          : "bg-white text-slate-700 border-transparent hover:bg-slate-100"
+      )}
+    >
+      <span className="shrink-0">{icon}</span>
+      <span className="truncate">{label}</span>
+    </button>
+  );
+}
+
+type MenuKey = "absensi" | "mk" | "mhs";
+
 export default function DosenPage({
   user,
   onLogout,
@@ -116,6 +155,11 @@ export default function DosenPage({
   user: UserLite;
   onLogout: () => void;
 }) {
+  /** =========================
+   * UI: sidebar menu (HANYA tampilan)
+   * ========================= */
+  const [activeMenu, setActiveMenu] = useState<MenuKey>("absensi");
+
   /** =========================
    * 0) CHECKIN/CHECKOUT dosen
    * (ditambah: foto + lokasi via modal, tanpa mengubah flow course/mhs)
@@ -261,8 +305,6 @@ export default function DosenPage({
       }
 
       // simpan ke Firestore
-      // NOTE: foto disimpan sebagai dataURL untuk sementara (tanpa Firebase Storage).
-      // Kalau kamu sudah siap pakai Firebase Storage, nanti kita ganti photoDataUrl -> photoUrl.
       await setDoc(
         doc(db, "staff_attendance", staffDocId),
         {
@@ -585,189 +627,305 @@ export default function DosenPage({
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      <Topbar name={user.name} role={user.role} onLogout={onLogout} />
-
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-8 space-y-6">
-        {/* CHECKIN/CHECKOUT */}
-        <section className="rounded-2xl border bg-white p-5">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="font-semibold">Absensi Dosen</h2>
-              <p className="text-sm text-slate-600">
-                Check-in & check-out (Firestore: <code>staff_attendance</code>)
-              </p>
+      {/* ===== LAYOUT: SIDEBAR + CONTENT (model seperti yang kamu minta) ===== */}
+      <div className="flex min-h-screen">
+        {/* SIDEBAR */}
+        <aside className="hidden md:flex w-64 shrink-0 border-r bg-white">
+          <div className="w-full flex flex-col p-4">
+            {/* brand */}
+            <div className="flex items-center gap-3 px-2 py-2">
+              <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white grid place-items-center">
+                <LayoutDashboard className="w-5 h-5" />
+              </div>
+              <div className="leading-tight">
+                <div className="font-semibold">DOSEN</div>
+                <div className="text-xs text-slate-500">
+                  {user.name || "Dashboard"}
+                </div>
+              </div>
             </div>
-            <div className="flex gap-2">
-              <button
-                onClick={openCheckInModal}
-                disabled={staffSaving}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
-              >
-                {staffSaving ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <LogIn className="w-4 h-4" />
-                )}
-                Check-in
-              </button>
-              <button
-                onClick={handleCheckOut}
-                disabled={staffSaving}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800 text-white hover:bg-slate-900 disabled:opacity-60"
-              >
-                {staffSaving ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <LogOut className="w-4 h-4" />
-                )}
-                Check-out
-              </button>
+
+            {/* menu 3 item */}
+            <nav className="mt-5 grid gap-1">
+              <SideItem
+                active={activeMenu === "absensi"}
+                icon={<LogIn className="w-4 h-4" />}
+                label="Absensi"
+                onClick={() => setActiveMenu("absensi")}
+              />
+              <SideItem
+                active={activeMenu === "mk"}
+                icon={<BookOpen className="w-4 h-4" />}
+                label="Mata Kuliah"
+                onClick={() => setActiveMenu("mk")}
+              />
+              <SideItem
+                active={activeMenu === "mhs"}
+                icon={<Users className="w-4 h-4" />}
+                label="Mahasiswa"
+                onClick={() => setActiveMenu("mhs")}
+              />
+            </nav>
+
+            {/* hint kecil */}
+            <div className="mt-auto pt-4 text-xs text-slate-400 px-2">
+              Klik menu di kiri untuk menampilkan konten.
             </div>
           </div>
+        </aside>
 
-          {(staffError || staffInfo) && (
-            <div className="mt-3 text-sm">
-              {staffError && <div className="text-red-600">{staffError}</div>}
-              {staffInfo && <div className="text-emerald-700">{staffInfo}</div>}
+        {/* CONTENT */}
+        <div className="flex-1 min-w-0">
+          {/* topbar di kanan */}
+          <div className="sticky top-0 z-20 bg-slate-50">
+            <div className="px-4 sm:px-6 pt-4">
+              <Topbar name={user.name} role={user.role} onLogout={onLogout} />
             </div>
-          )}
-        </section>
-
-        {/* COURSES */}
-        <section className="rounded-2xl border bg-white p-5">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h2 className="font-semibold mb-1">Mata Kuliah</h2>
-              <p className="text-sm text-slate-600">
-                Buat mata kuliah yang kamu ajar, lalu assign mahasiswa.
-              </p>
-            </div>
-
-            <div className="flex gap-2">
-              <button
-                onClick={() => setOpenCourse(true)}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700"
-              >
-                <Plus className="w-4 h-4" /> Tambah MK
-              </button>
-
-              <button
-                onClick={() => {
-                  resetMhsForm();
-                  setOpenMhs(true);
-                }}
-                className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
-              >
-                <Plus className="w-4 h-4" /> Tambah Mahasiswa
-              </button>
-            </div>
+            <div className="h-4" />
           </div>
 
-          <div className="mt-5">
-            {loadingCourses ? (
-              <div className="text-sm text-slate-500 flex items-center gap-2">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Memuat mata kuliah...
-              </div>
-            ) : coursesErr ? (
-              <div className="text-sm text-red-600">{coursesErr}</div>
-            ) : courses.length === 0 ? (
-              <div className="text-sm text-slate-500">
-                Belum ada mata kuliah.
-              </div>
-            ) : (
-              <div className="grid sm:grid-cols-2 gap-3">
-                {courses.map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() => setActiveCourseId(c.id)}
-                    className={`text-left rounded-2xl border p-4 hover:bg-slate-50 ${
-                      activeCourseId === c.id
-                        ? "border-indigo-300 bg-indigo-50/30"
-                        : ""
-                    }`}
-                  >
-                    <div className="font-semibold">{c.nama}</div>
-                    <div className="text-sm text-slate-600">
-                      {c.kelas ?? "-"} • {c.prodi ?? "-"}
+          <div className="px-4 sm:px-6 pb-10">
+            <main className="max-w-6xl mx-auto">
+              {/* ===== 1) ABSENSI ===== */}
+              {activeMenu === "absensi" && (
+                <section className="rounded-2xl border bg-white p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="font-semibold">Absensi Dosen</h2>
+                      <p className="text-sm text-slate-600">
+                        Check-in & check-out (Firestore:{" "}
+                        <code>staff_attendance</code>)
+                      </p>
                     </div>
-                    {activeCourseId === c.id && (
-                      <div className="mt-2 inline-flex items-center gap-2 text-xs text-indigo-700">
-                        <CheckCircle2 className="w-4 h-4" /> Dipilih
+                    <div className="flex gap-2">
+                      <button
+                        onClick={openCheckInModal}
+                        disabled={staffSaving}
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+                      >
+                        {staffSaving ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <LogIn className="w-4 h-4" />
+                        )}
+                        Check-in
+                      </button>
+                      <button
+                        onClick={handleCheckOut}
+                        disabled={staffSaving}
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800 text-white hover:bg-slate-900 disabled:opacity-60"
+                      >
+                        {staffSaving ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <LogOut className="w-4 h-4" />
+                        )}
+                        Check-out
+                      </button>
+                    </div>
+                  </div>
+
+                  {(staffError || staffInfo) && (
+                    <div className="mt-3 text-sm">
+                      {staffError && (
+                        <div className="text-red-600">{staffError}</div>
+                      )}
+                      {staffInfo && (
+                        <div className="text-emerald-700">{staffInfo}</div>
+                      )}
+                    </div>
+                  )}
+                </section>
+              )}
+
+              {/* ===== 2) MATA KULIAH ===== */}
+              {activeMenu === "mk" && (
+                <section className="rounded-2xl border bg-white p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="font-semibold mb-1">Mata Kuliah</h2>
+                      <p className="text-sm text-slate-600">
+                        Buat mata kuliah yang kamu ajar, lalu assign mahasiswa.
+                      </p>
+                    </div>
+
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => setOpenCourse(true)}
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700"
+                      >
+                        <Plus className="w-4 h-4" /> Tambah MK
+                      </button>
+
+                      <button
+                        onClick={() => {
+                          resetMhsForm();
+                          setOpenMhs(true);
+                        }}
+                        className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
+                      >
+                        <Plus className="w-4 h-4" /> Tambah Mahasiswa
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-5">
+                    {loadingCourses ? (
+                      <div className="text-sm text-slate-500 flex items-center gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Memuat mata kuliah...
+                      </div>
+                    ) : coursesErr ? (
+                      <div className="text-sm text-red-600">{coursesErr}</div>
+                    ) : courses.length === 0 ? (
+                      <div className="text-sm text-slate-500">
+                        Belum ada mata kuliah.
+                      </div>
+                    ) : (
+                      <div className="grid sm:grid-cols-2 gap-3">
+                        {courses.map((c) => (
+                          <button
+                            key={c.id}
+                            onClick={() => setActiveCourseId(c.id)}
+                            className={`text-left rounded-2xl border p-4 hover:bg-slate-50 ${
+                              activeCourseId === c.id
+                                ? "border-indigo-300 bg-indigo-50/30"
+                                : ""
+                            }`}
+                          >
+                            <div className="font-semibold">{c.nama}</div>
+                            <div className="text-sm text-slate-600">
+                              {c.kelas ?? "-"} • {c.prodi ?? "-"}
+                            </div>
+                            {activeCourseId === c.id && (
+                              <div className="mt-2 inline-flex items-center gap-2 text-xs text-indigo-700">
+                                <CheckCircle2 className="w-4 h-4" /> Dipilih
+                              </div>
+                            )}
+                          </button>
+                        ))}
                       </div>
                     )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </section>
+                  </div>
 
-        {/* STUDENTS */}
-        <section className="rounded-2xl border bg-white p-5">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="font-semibold">Mahasiswa untuk Mata Kuliah</h2>
-              <p className="text-sm text-slate-600">
-                {activeCourse ? (
-                  <>
-                    <span className="font-medium">{activeCourse.nama}</span> •{" "}
-                    {activeCourse.kelas ?? "-"} • {activeCourse.prodi ?? "-"}
-                  </>
-                ) : (
-                  "Pilih mata kuliah dulu."
-                )}
-              </p>
-            </div>
-          </div>
+                  {/* hint singkat: biar dosen paham mahasiswa ada di tab Mahasiswa */}
+                  <div className="mt-4 text-xs text-slate-500">
+                    Tips: Setelah memilih MK, buka menu <b>Mahasiswa</b> untuk
+                    melihat daftar mahasiswa per MK.
+                  </div>
+                </section>
+              )}
 
-          <div className="mt-4">
-            {!activeCourseId ? (
-              <div className="text-sm text-slate-500">
-                Belum memilih mata kuliah.
-              </div>
-            ) : studLoading ? (
-              <div className="text-sm text-slate-500 flex items-center gap-2">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Memuat mahasiswa...
-              </div>
-            ) : studErr ? (
-              <div className="text-sm text-red-600">{studErr}</div>
-            ) : students.length === 0 ? (
-              <div className="text-sm text-slate-500">
-                Belum ada mahasiswa di mata kuliah ini.
-              </div>
-            ) : (
-              <div className="divide-y">
-                {students.map((s) => (
-                  <div key={s.uid} className="py-3 flex items-start gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium truncate">{s.nama}</div>
-                      <div className="text-sm text-slate-600 truncate">
-                        {s.email}
-                      </div>
-                      <div className="text-xs text-slate-500 mt-1">
-                        {s.nim ? `NIM: ${s.nim}` : ""}
-                        {s.kelas ? ` • ${s.kelas}` : ""}
-                        {s.prodi ? ` • ${s.prodi}` : ""}
-                      </div>
+              {/* ===== 3) MAHASISWA ===== */}
+              {activeMenu === "mhs" && (
+                <section className="rounded-2xl border bg-white p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="font-semibold">
+                        Mahasiswa untuk Mata Kuliah
+                      </h2>
+                      <p className="text-sm text-slate-600">
+                        {activeCourse ? (
+                          <>
+                            <span className="font-medium">
+                              {activeCourse.nama}
+                            </span>{" "}
+                            • {activeCourse.kelas ?? "-"} •{" "}
+                            {activeCourse.prodi ?? "-"}
+                          </>
+                        ) : (
+                          "Pilih mata kuliah dulu."
+                        )}
+                      </p>
                     </div>
 
+                    {/* tombol tambah mahasiswa tetap ada di tab mahasiswa juga */}
                     <button
-                      onClick={() => removeStudent(s.uid)}
-                      className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border hover:bg-slate-50 text-slate-700"
-                      title="Hapus dari MK"
+                      onClick={() => {
+                        resetMhsForm();
+                        setOpenMhs(true);
+                      }}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
                     >
-                      <Trash2 className="w-4 h-4" />
-                      <span className="text-sm">Hapus</span>
+                      <Plus className="w-4 h-4" /> Tambah Mahasiswa
                     </button>
                   </div>
-                ))}
-              </div>
-            )}
+
+                  {/* selector MK kecil (tanpa ubah logika, cuma UI) */}
+                  <div className="mt-4 grid gap-2">
+                    <div className="text-sm font-medium text-slate-700">
+                      Pilih Mata Kuliah
+                    </div>
+                    <select
+                      value={activeCourseId}
+                      onChange={(e) => setActiveCourseId(e.target.value)}
+                      className="w-full max-w-md px-3 py-2 rounded-xl border bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
+                    >
+                      <option value="">-- pilih mata kuliah --</option>
+                      {courses.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.nama} ({c.kelas ?? "-"} / {c.prodi ?? "-"})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div className="mt-4">
+                    {!activeCourseId ? (
+                      <div className="text-sm text-slate-500">
+                        Belum memilih mata kuliah.
+                      </div>
+                    ) : studLoading ? (
+                      <div className="text-sm text-slate-500 flex items-center gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Memuat mahasiswa...
+                      </div>
+                    ) : studErr ? (
+                      <div className="text-sm text-red-600">{studErr}</div>
+                    ) : students.length === 0 ? (
+                      <div className="text-sm text-slate-500">
+                        Belum ada mahasiswa di mata kuliah ini.
+                      </div>
+                    ) : (
+                      <div className="divide-y">
+                        {students.map((s) => (
+                          <div
+                            key={s.uid}
+                            className="py-3 flex items-start gap-3"
+                          >
+                            <div className="flex-1 min-w-0">
+                              <div className="font-medium truncate">
+                                {s.nama}
+                              </div>
+                              <div className="text-sm text-slate-600 truncate">
+                                {s.email}
+                              </div>
+                              <div className="text-xs text-slate-500 mt-1">
+                                {s.nim ? `NIM: ${s.nim}` : ""}
+                                {s.kelas ? ` • ${s.kelas}` : ""}
+                                {s.prodi ? ` • ${s.prodi}` : ""}
+                              </div>
+                            </div>
+
+                            <button
+                              onClick={() => removeStudent(s.uid)}
+                              className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border hover:bg-slate-50 text-slate-700"
+                              title="Hapus dari MK"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                              <span className="text-sm">Hapus</span>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
+            </main>
           </div>
-        </section>
-      </main>
+        </div>
+      </div>
 
       {/* MODAL: CHECK-IN (foto + lokasi) */}
       {openCheckIn && (
