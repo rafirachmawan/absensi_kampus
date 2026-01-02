@@ -783,7 +783,7 @@ export default function DosenPage({
                   {/* 2 kartu seperti karyawan */}
                   <section className="grid gap-6 md:grid-cols-2">
                     <AbsCardLikeKaryawan
-                      title="Absen Masuk (Check-in)"
+                      title="Absen Masuk"
                       icon={<LogIn className="w-5 h-5" />}
                       subtitle="Wajib foto + lokasi"
                       checked={checkedMasuk}
@@ -795,9 +795,9 @@ export default function DosenPage({
                     />
 
                     <AbsCardLikeKaryawan
-                      title="Absen Pulang (Check-out)"
+                      title="Absen Pulang"
                       icon={<LogOut className="w-5 h-5" />}
-                      subtitle="Simpan jam check-out"
+                      subtitle="Wajib foto + lokasi"
                       checked={checkedPulang}
                       checkedLabel={pulangTime || "Sudah"}
                       loading={staffSaving}
@@ -809,7 +809,7 @@ export default function DosenPage({
                         handleCheckOut();
                       }}
                       disabled={staffSaving}
-                      cta="Check-out Sekarang"
+                      cta="Ambil Foto & Lokasi"
                     />
                   </section>
                 </>

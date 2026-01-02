@@ -462,9 +462,8 @@ function AbsCard({
           </div>
           <div>
             <h4 className="font-semibold">{title}</h4>
-            <p className="text-sm text-slate-600">
-              Jam {window.start}–{window.end}
-            </p>
+            {/* ✅ DIGANTI seperti UI dosen */}
+            <p className="text-sm text-slate-600">Wajib foto + lokasi</p>
           </div>
         </div>
 
