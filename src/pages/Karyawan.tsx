@@ -47,6 +47,16 @@ function withinWindow(win: ShiftWindow, now: Date) {
   return now >= s && now <= e;
 }
 
+/** ===== helpers jam profesional ===== */
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+function formatTimeHMS(d: Date) {
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(
+    d.getSeconds()
+  )}`;
+}
+
 /** UI helper */
 function cx(...a: Array<string | false | null | undefined>) {
   return a.filter(Boolean).join(" ");
@@ -95,6 +105,13 @@ export default function KaryawanPage({
   // UI: sidebar menu (tanpa mengubah logika absensi)
   const [activeMenu, setActiveMenu] = useState<MenuKey>("absensi");
 
+  /** ===== JAM LIVE (berjalan terus) ===== */
+  const [now, setNow] = useState<Date>(() => new Date());
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
   const [records, setRecords] = useState<EmployeeCheck[]>(() => {
     try {
       return JSON.parse(localStorage.getItem(LS_KEY) || "[]");
@@ -125,8 +142,8 @@ export default function KaryawanPage({
     [records, user.id, tISO]
   );
 
-  const now = new Date();
-  const nowTime = now.toTimeString().slice(0, 8);
+  /** ===== pakai now (live) ===== */
+  const nowTime = formatTimeHMS(now);
   const allowMasuk = withinWindow(WINDOWS[0], now);
   const allowPulang = withinWindow(WINDOWS[1], now);
 
@@ -146,7 +163,7 @@ export default function KaryawanPage({
       userId: user.id,
       tanggalISO: tISO,
       type: openType,
-      time: nowTime,
+      time: nowTime, // ✅ tetap time dari jam live saat confirm
       selfieDataUrl: payload.selfieDataUrl,
       lat: payload.lat ?? undefined,
       lng: payload.lng ?? undefined,
@@ -259,10 +276,13 @@ export default function KaryawanPage({
                             </p>
                           </div>
                         </div>
+
+                        {/* ✅ Jam/Tanggal lebih profesional + jam live */}
                         <div className="grid grid-cols-2 gap-3 w-full md:w-auto">
                           <Metric
-                            label="Waktu Sekarang"
-                            value={now.toLocaleTimeString()}
+                            label="Waktu"
+                            value={formatTimeHMS(now)}
+                            suffix="WIB"
                           />
                           <Metric label="Tanggal" value={labelTanggal(tISO)} />
                         </div>
@@ -391,7 +411,7 @@ export default function KaryawanPage({
                       <div className="rounded-2xl border bg-slate-50 p-4">
                         <div className="font-medium">2) Absen Pulang</div>
                         <div className="text-slate-600 mt-1">
-                          Absen pulang hanya bisa jika sudah absen masuk. Jam
+                          Absen pulang hanya bisa jika sudah absen masuk. Jam{" "}
                           {WINDOWS[1].start}–{WINDOWS[1].end}.
                         </div>
                       </div>
@@ -429,11 +449,28 @@ export default function KaryawanPage({
 }
 
 /* ===== sub-komponen ===== */
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({
+  label,
+  value,
+  suffix,
+}: {
+  label: string;
+  value: string;
+  suffix?: string;
+}) {
   return (
-    <div className="rounded-2xl border bg-white/80 backdrop-blur px-4 py-2">
+    <div className="rounded-2xl border bg-white/80 backdrop-blur px-4 py-3">
       <div className="text-[11px] tracking-widest text-slate-500">{label}</div>
-      <div className="text-[15px] font-semibold">{value}</div>
+      <div className="mt-0.5 flex items-baseline gap-2">
+        <div className="text-[18px] font-semibold tabular-nums leading-none">
+          {value}
+        </div>
+        {suffix ? (
+          <div className="text-[11px] tracking-widest text-slate-500">
+            {suffix}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }

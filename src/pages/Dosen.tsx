@@ -2,9 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Topbar from "../components/Topbar";
 import type { UserLite } from "../types";
 import {
-  Plus,
   X,
-  Trash2,
   Loader2,
   CheckCircle2,
   LogIn,
@@ -14,52 +12,27 @@ import {
   Check,
   RefreshCw,
   LayoutDashboard,
-  BookOpen,
-  Users,
   CalendarDays,
+  History,
+  Info,
 } from "lucide-react";
 
 import { db, firebaseConfig } from "../lib/firebase";
 import {
-  addDoc,
   collection,
-  deleteDoc,
   doc,
   onSnapshot,
-  orderBy,
   query,
   serverTimestamp,
   setDoc,
   updateDoc,
   where,
+  orderBy,
+  limit,
 } from "firebase/firestore";
 
-// secondary auth agar dosen tidak logout saat buat akun mahasiswa
-import { initializeApp, type FirebaseApp } from "firebase/app";
-import {
-  getAuth,
-  createUserWithEmailAndPassword,
-  type Auth,
-} from "firebase/auth";
-
-type Course = {
-  id: string;
-  nama: string;
-  dosenUid: string;
-  kelas?: string | null;
-  prodi?: string | null;
-  createdAt?: any;
-};
-
-type StudentRow = {
-  uid: string;
-  nama: string;
-  email: string;
-  nim?: string | null; // optional, tidak ada di UserLite, hanya data mahasiswa
-  kelas?: string | null;
-  prodi?: string | null;
-  createdAt?: any;
-};
+/** ===== helpers tanggal (samakan dengan Karyawan) ===== */
+const HARI = ["Minggu", "Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu"];
 
 function formatISO(d: Date) {
   const y = d.getFullYear();
@@ -67,18 +40,26 @@ function formatISO(d: Date) {
   const day = String(d.getDate()).padStart(2, "0");
   return `${y}-${m}-${day}`;
 }
-
-/** secondary auth singleton */
-let _secondaryApp: FirebaseApp | null = null;
-let _secondaryAuth: Auth | null = null;
-function getSecondaryAuth() {
-  if (!_secondaryApp)
-    _secondaryApp = initializeApp(firebaseConfig, "secondary");
-  if (!_secondaryAuth) _secondaryAuth = getAuth(_secondaryApp);
-  return _secondaryAuth;
+function labelTanggal(iso: string) {
+  const d = new Date(iso + "T00:00:00");
+  return `${HARI[d.getDay()]}, ${d.getDate().toString().padStart(2, "0")}/${(
+    d.getMonth() + 1
+  )
+    .toString()
+    .padStart(2, "0")}/${d.getFullYear()}`;
 }
 
-/** ===== helpers: geolocation + camera (tanpa ubah logika lain) ===== */
+/** ===== helpers jam profesional ===== */
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+function formatTimeHMS(d: Date) {
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(
+    d.getSeconds()
+  )}`;
+}
+
+/** ===== helpers: geolocation + camera ===== */
 function getBrowserPosition(): Promise<{
   lat: number;
   lng: number;
@@ -147,7 +128,18 @@ function SideItem({
   );
 }
 
-type MenuKey = "absensi" | "mk" | "mhs";
+type MenuKey = "absensi" | "riwayat" | "panduan";
+
+type StaffRow = {
+  id: string;
+  tanggalISO: string;
+  checkInAt?: any;
+  checkOutAt?: any;
+  fotoDataUrl?: string | null;
+  lokasi?: { lat: number; lng: number; accuracy?: number | null } | null;
+  role?: string;
+  uid?: string;
+};
 
 export default function DosenPage({
   user,
@@ -156,15 +148,17 @@ export default function DosenPage({
   user: UserLite;
   onLogout: () => void;
 }) {
-  /** =========================
-   * UI: sidebar menu (HANYA tampilan)
-   * ========================= */
+  /** ===== UI menu (SAMAKAN KARYAWAN) ===== */
   const [activeMenu, setActiveMenu] = useState<MenuKey>("absensi");
 
-  /** =========================
-   * 0) CHECKIN/CHECKOUT dosen
-   * (ditambah: foto + lokasi via modal, tanpa mengubah flow course/mhs)
-   * ========================= */
+  /** ===== JAM LIVE (berjalan terus) ===== */
+  const [now, setNow] = useState<Date>(() => new Date());
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  /** ===== ABSENSI DOSEN (tetap seperti punyamu) ===== */
   const [staffSaving, setStaffSaving] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
   const [staffInfo, setStaffInfo] = useState<string | null>(null);
@@ -172,7 +166,6 @@ export default function DosenPage({
   const todayISO = formatISO(new Date());
   const staffDocId = `${user.id}_${todayISO}`;
 
-  // (tambahan ringan untuk UI seperti karyawan) - status hari ini
   const [todayRec, setTodayRec] = useState<{
     checkInAt?: any;
     checkOutAt?: any;
@@ -194,14 +187,13 @@ export default function DosenPage({
         });
       },
       () => {
-        // jika error, biarkan UI tetap jalan
         setTodayRec(null);
       }
     );
     return () => unsub();
   }, [staffDocId]);
 
-  // modal checkin (foto+lokasi)
+  // modal check-in (foto + lokasi)
   const [openCheckIn, setOpenCheckIn] = useState(false);
   const [locLoading, setLocLoading] = useState(false);
   const [loc, setLoc] = useState<{
@@ -217,20 +209,10 @@ export default function DosenPage({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  function resetCheckInModalState() {
-    setLoc(null);
-    setLocLoading(false);
-    setCamLoading(false);
-    setCamError(null);
-    setPhotoDataUrl(null);
-    stopCamera();
-  }
-
   function stopCamera() {
     try {
-      if (streamRef.current) {
+      if (streamRef.current)
         streamRef.current.getTracks().forEach((t) => t.stop());
-      }
     } catch {}
     streamRef.current = null;
     if (videoRef.current) {
@@ -239,6 +221,15 @@ export default function DosenPage({
         videoRef.current.srcObject = null;
       } catch {}
     }
+  }
+
+  function resetCheckInModalState() {
+    setLoc(null);
+    setLocLoading(false);
+    setCamLoading(false);
+    setCamError(null);
+    setPhotoDataUrl(null);
+    stopCamera();
   }
 
   async function openCheckInModal() {
@@ -275,7 +266,6 @@ export default function DosenPage({
         return;
       }
 
-      // prefer front camera (untuk selfie absensi)
       const stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: "user" },
         audio: false,
@@ -313,7 +303,6 @@ export default function DosenPage({
     const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
     setPhotoDataUrl(dataUrl);
 
-    // setelah capture, matikan kamera supaya hemat
     stopCamera();
     setStaffInfo("✅ Foto berhasil diambil.");
   }
@@ -324,7 +313,6 @@ export default function DosenPage({
       setStaffError(null);
       setStaffInfo(null);
 
-      // wajib ada lokasi + foto (sesuai kebutuhan kamu)
       if (!loc) {
         setStaffError("Ambil lokasi dulu sebelum check-in.");
         return;
@@ -334,7 +322,6 @@ export default function DosenPage({
         return;
       }
 
-      // simpan ke Firestore
       await setDoc(
         doc(db, "staff_attendance", staffDocId),
         {
@@ -342,13 +329,7 @@ export default function DosenPage({
           role: "dosen",
           tanggalISO: todayISO,
           checkInAt: serverTimestamp(),
-
-          // tambahan (tanpa mengganggu logika lain)
-          lokasi: {
-            lat: loc.lat,
-            lng: loc.lng,
-            accuracy: loc.accuracy,
-          },
+          lokasi: { lat: loc.lat, lng: loc.lng, accuracy: loc.accuracy },
           fotoDataUrl: photoDataUrl,
           userAgent: navigator.userAgent,
         },
@@ -358,6 +339,9 @@ export default function DosenPage({
       setStaffInfo("✅ Check-in berhasil tersimpan.");
       setOpenCheckIn(false);
       resetCheckInModalState();
+
+      // UX: setelah confirm, pindah ke riwayat
+      setActiveMenu("riwayat");
     } catch (e: any) {
       console.error("CHECKIN error:", e);
       setStaffError(e?.message || "Gagal check-in. Cek Firestore Rules.");
@@ -375,6 +359,7 @@ export default function DosenPage({
         checkOutAt: serverTimestamp(),
       });
       setStaffInfo("✅ Check-out berhasil tersimpan.");
+      setActiveMenu("riwayat");
     } catch (e: any) {
       setStaffError(
         e?.message ||
@@ -386,276 +371,11 @@ export default function DosenPage({
   }
 
   useEffect(() => {
-    // cleanup camera saat unmount / modal close
     return () => stopCamera();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /** =========================
-   * 1) COURSES milik dosen
-   * ========================= */
-  const [courses, setCourses] = useState<Course[]>([]);
-  const [loadingCourses, setLoadingCourses] = useState(true);
-  const [coursesErr, setCoursesErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    setLoadingCourses(true);
-    setCoursesErr(null);
-
-    const q = query(
-      collection(db, "courses"),
-      where("dosenUid", "==", user.id),
-      orderBy("createdAt", "desc")
-    );
-
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const rows: Course[] = snap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            nama: data.nama || "",
-            dosenUid: data.dosenUid || "",
-            kelas: data.kelas ?? null,
-            prodi: data.prodi ?? null,
-            createdAt: data.createdAt,
-          };
-        });
-        setCourses(rows);
-        setLoadingCourses(false);
-      },
-      (err) => {
-        console.error("courses snapshot error:", err);
-        setCoursesErr(err?.message || "Gagal load mata kuliah.");
-        setLoadingCourses(false);
-      }
-    );
-
-    return () => unsub();
-  }, [user.id]);
-
-  /** =========================
-   * 2) Modal: tambah course
-   * ========================= */
-  const [openCourse, setOpenCourse] = useState(false);
-  const [courseNama, setCourseNama] = useState("");
-  const [courseKelas, setCourseKelas] = useState("");
-  const [courseProdi, setCourseProdi] = useState("");
-  const [courseSaving, setCourseSaving] = useState(false);
-  const [courseErr, setCourseErr] = useState<string | null>(null);
-
-  async function saveCourse() {
-    const nama = courseNama.trim();
-    if (nama.length < 3) {
-      setCourseErr("Nama mata kuliah minimal 3 karakter.");
-      return;
-    }
-
-    try {
-      setCourseSaving(true);
-      setCourseErr(null);
-
-      await addDoc(collection(db, "courses"), {
-        nama,
-        dosenUid: user.id,
-        kelas: courseKelas.trim() || null,
-        prodi: courseProdi.trim() || null,
-        createdAt: serverTimestamp(),
-      });
-
-      setOpenCourse(false);
-      setCourseNama("");
-      setCourseKelas("");
-      setCourseProdi("");
-    } catch (e: any) {
-      setCourseErr(e?.message || "Gagal simpan mata kuliah.");
-    } finally {
-      setCourseSaving(false);
-    }
-  }
-
-  /** =========================
-   * 3) Modal: tambah mahasiswa + assign course
-   * ========================= */
-  const [openMhs, setOpenMhs] = useState(false);
-  const [pickCourseId, setPickCourseId] = useState<string>("");
-  const pickedCourse = useMemo(
-    () => courses.find((c) => c.id === pickCourseId),
-    [courses, pickCourseId]
-  );
-
-  const [mhsNama, setMhsNama] = useState("");
-  const [mhsEmail, setMhsEmail] = useState("");
-  const [mhsPass, setMhsPass] = useState("");
-  const [mhsNim, setMhsNim] = useState("");
-  const [mhsKelas, setMhsKelas] = useState("");
-  const [mhsProdi, setMhsProdi] = useState("");
-
-  const [mhsSaving, setMhsSaving] = useState(false);
-  const [mhsErr, setMhsErr] = useState<string | null>(null);
-
-  const canSubmitMhs = useMemo(() => {
-    return (
-      !!pickedCourse &&
-      mhsNama.trim().length >= 3 &&
-      mhsEmail.trim().includes("@") &&
-      mhsPass.trim().length >= 6
-    );
-  }, [pickedCourse, mhsNama, mhsEmail, mhsPass]);
-
-  function resetMhsForm() {
-    setPickCourseId("");
-    setMhsNama("");
-    setMhsEmail("");
-    setMhsPass("");
-    setMhsNim("");
-    setMhsKelas("");
-    setMhsProdi("");
-    setMhsErr(null);
-  }
-
-  async function saveMahasiswaAndAssign() {
-    if (!pickedCourse) {
-      setMhsErr("Pilih mata kuliah dulu.");
-      return;
-    }
-
-    const nama = mhsNama.trim();
-    const email = mhsEmail.trim().toLowerCase();
-    const password = mhsPass.trim();
-
-    if (nama.length < 3) return setMhsErr("Nama minimal 3 karakter.");
-    if (!email.includes("@")) return setMhsErr("Email tidak valid.");
-    if (password.length < 6) return setMhsErr("Password minimal 6 karakter.");
-
-    try {
-      setMhsSaving(true);
-      setMhsErr(null);
-
-      // 1) create auth user mahasiswa (secondary auth)
-      const secAuth = getSecondaryAuth();
-      const cred = await createUserWithEmailAndPassword(
-        secAuth,
-        email,
-        password
-      );
-      const mhsUid = cred.user.uid;
-
-      // 2) profile users/{uid}
-      await setDoc(doc(db, "users", mhsUid), {
-        email,
-        name: nama,
-        role: "mahasiswa",
-        kelas: mhsKelas.trim() || pickedCourse.kelas || null,
-        prodi: mhsProdi.trim() || pickedCourse.prodi || null,
-        nim: mhsNim.trim() || null,
-        createdAt: serverTimestamp(),
-        createdBy: user.id,
-      });
-
-      // 3) enrollment (dipakai MahasiswaPage)
-      await setDoc(doc(db, "users", mhsUid, "enrollments", pickedCourse.id), {
-        courseId: pickedCourse.id,
-        courseNama: pickedCourse.nama,
-        dosenUid: user.id,
-        createdAt: serverTimestamp(),
-      });
-
-      // 4) course students list (buat dosen)
-      await setDoc(doc(db, "courses", pickedCourse.id, "students", mhsUid), {
-        uid: mhsUid,
-        nama,
-        email,
-        nim: mhsNim.trim() || null,
-        kelas: mhsKelas.trim() || pickedCourse.kelas || null,
-        prodi: mhsProdi.trim() || pickedCourse.prodi || null,
-        createdAt: serverTimestamp(),
-      });
-
-      setOpenMhs(false);
-      resetMhsForm();
-      alert("Akun mahasiswa berhasil dibuat & di-assign ke mata kuliah.");
-    } catch (e: any) {
-      console.error("create mahasiswa error:", e);
-      setMhsErr(e?.message || "Gagal membuat akun mahasiswa.");
-    } finally {
-      setMhsSaving(false);
-    }
-  }
-
-  /** =========================
-   * 4) List mahasiswa per course
-   * ========================= */
-  const [activeCourseId, setActiveCourseId] = useState<string>("");
-  const activeCourse = useMemo(
-    () => courses.find((c) => c.id === activeCourseId),
-    [courses, activeCourseId]
-  );
-
-  const [students, setStudents] = useState<StudentRow[]>([]);
-  const [studLoading, setStudLoading] = useState(false);
-  const [studErr, setStudErr] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (!activeCourseId) {
-      setStudents([]);
-      return;
-    }
-
-    setStudLoading(true);
-    setStudErr(null);
-
-    const q = query(
-      collection(db, "courses", activeCourseId, "students"),
-      orderBy("createdAt", "desc")
-    );
-
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const rows: StudentRow[] = snap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            uid: data.uid || d.id,
-            nama: data.nama || "",
-            email: data.email || "",
-            nim: data.nim ?? null,
-            kelas: data.kelas ?? null,
-            prodi: data.prodi ?? null,
-            createdAt: data.createdAt,
-          };
-        });
-        setStudents(rows);
-        setStudLoading(false);
-      },
-      (err) => {
-        console.error("students snapshot error:", err);
-        setStudErr(err?.message || "Gagal load mahasiswa.");
-        setStudLoading(false);
-      }
-    );
-
-    return () => unsub();
-  }, [activeCourseId]);
-
-  async function removeStudent(studentUid: string) {
-    if (!activeCourseId) return;
-    const ok = confirm("Hapus mahasiswa dari mata kuliah ini?");
-    if (!ok) return;
-
-    try {
-      await deleteDoc(
-        doc(db, "courses", activeCourseId, "students", studentUid)
-      );
-      // jika mau sekalian hapus enrollment:
-      // await deleteDoc(doc(db, "users", studentUid, "enrollments", activeCourseId));
-    } catch (e: any) {
-      alert(e?.message || "Gagal hapus mahasiswa.");
-    }
-  }
-
-  // ======= UI util untuk badge jam (tanpa ubah logika data) =======
+  // ======= util time label =======
   function tsToTime(ts: any) {
     try {
       const d: Date =
@@ -672,14 +392,102 @@ export default function DosenPage({
   const masukTime = tsToTime(todayRec?.checkInAt);
   const pulangTime = tsToTime(todayRec?.checkOutAt);
 
+  /** ===== RIWAYAT (Firestore staff_attendance) ===== */
+  const [history, setHistory] = useState<StaffRow[]>([]);
+  const [histLoading, setHistLoading] = useState(false);
+  const [histErr, setHistErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    setHistLoading(true);
+    setHistErr(null);
+
+    const colRef = collection(db, "staff_attendance");
+
+    const q1 = query(
+      colRef,
+      where("uid", "==", user.id),
+      orderBy("tanggalISO", "desc"),
+      limit(14)
+    );
+
+    let unsub1 = () => {};
+    let unsub2 = () => {};
+
+    unsub1 = onSnapshot(
+      q1,
+      (snap) => {
+        const rows: StaffRow[] = snap.docs.map((d) => {
+          const data = d.data() as any;
+          return {
+            id: d.id,
+            tanggalISO: String(data.tanggalISO || ""),
+            checkInAt: data.checkInAt,
+            checkOutAt: data.checkOutAt,
+            fotoDataUrl: data.fotoDataUrl ?? null,
+            lokasi: data.lokasi ?? null,
+            role: data.role,
+            uid: data.uid,
+          };
+        });
+        setHistory(rows);
+        setHistLoading(false);
+      },
+      (err) => {
+        const msg = String(err?.message || "");
+        console.error("history snapshot error:", err);
+
+        if (msg.toLowerCase().includes("requires an index")) {
+          const q2 = query(colRef, where("uid", "==", user.id), limit(50));
+          unsub2 = onSnapshot(
+            q2,
+            (snap2) => {
+              const rows2: StaffRow[] = snap2.docs.map((d) => {
+                const data = d.data() as any;
+                return {
+                  id: d.id,
+                  tanggalISO: String(data.tanggalISO || ""),
+                  checkInAt: data.checkInAt,
+                  checkOutAt: data.checkOutAt,
+                  fotoDataUrl: data.fotoDataUrl ?? null,
+                  lokasi: data.lokasi ?? null,
+                  role: data.role,
+                  uid: data.uid,
+                };
+              });
+
+              rows2.sort((a, b) =>
+                (b.tanggalISO || "").localeCompare(a.tanggalISO || "")
+              );
+              setHistory(rows2.slice(0, 14));
+              setHistLoading(false);
+              setHistErr(null);
+            },
+            (err2) => {
+              setHistErr(err2?.message || "Gagal memuat riwayat.");
+              setHistLoading(false);
+            }
+          );
+        } else {
+          setHistErr(msg || "Gagal memuat riwayat.");
+          setHistLoading(false);
+        }
+      }
+    );
+
+    return () => {
+      try {
+        unsub1();
+        unsub2();
+      } catch {}
+    };
+  }, [user.id]);
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      {/* ===== LAYOUT: SIDEBAR + CONTENT ===== */}
       <div className="flex min-h-screen">
-        {/* SIDEBAR */}
+        {/* SIDEBAR (samakan karyawan) */}
         <aside className="hidden md:flex w-64 shrink-0 border-r bg-white">
           <div className="w-full flex flex-col p-4">
-            {/* brand */}
             <div className="flex items-center gap-3 px-2 py-2">
               <div className="w-10 h-10 rounded-2xl bg-indigo-600 text-white grid place-items-center">
                 <LayoutDashboard className="w-5 h-5" />
@@ -687,12 +495,11 @@ export default function DosenPage({
               <div className="leading-tight">
                 <div className="font-semibold">DOSEN</div>
                 <div className="text-xs text-slate-500">
-                  {user.name || "Dashboard"}
+                  {user.name || "Absensi"}
                 </div>
               </div>
             </div>
 
-            {/* menu 3 item */}
             <nav className="mt-5 grid gap-1">
               <SideItem
                 active={activeMenu === "absensi"}
@@ -701,16 +508,16 @@ export default function DosenPage({
                 onClick={() => setActiveMenu("absensi")}
               />
               <SideItem
-                active={activeMenu === "mk"}
-                icon={<BookOpen className="w-4 h-4" />}
-                label="Mata Kuliah"
-                onClick={() => setActiveMenu("mk")}
+                active={activeMenu === "riwayat"}
+                icon={<History className="w-4 h-4" />}
+                label="Riwayat"
+                onClick={() => setActiveMenu("riwayat")}
               />
               <SideItem
-                active={activeMenu === "mhs"}
-                icon={<Users className="w-4 h-4" />}
-                label="Mahasiswa"
-                onClick={() => setActiveMenu("mhs")}
+                active={activeMenu === "panduan"}
+                icon={<Info className="w-4 h-4" />}
+                label="Panduan"
+                onClick={() => setActiveMenu("panduan")}
               />
             </nav>
 
@@ -722,7 +529,6 @@ export default function DosenPage({
 
         {/* CONTENT */}
         <div className="flex-1 min-w-0">
-          {/* topbar */}
           <div className="sticky top-0 z-20 bg-slate-50">
             <div className="px-4 sm:px-6 pt-4">
               <Topbar name={user.name} role={user.role} onLogout={onLogout} />
@@ -732,10 +538,9 @@ export default function DosenPage({
 
           <div className="px-4 sm:px-6 pb-10">
             <main className="max-w-6xl mx-auto">
-              {/* ===== ABSENSI (MODEL KARYAWAN) ===== */}
+              {/* ===== ABSENSI ===== */}
               {activeMenu === "absensi" && (
                 <>
-                  {/* HERO seperti karyawan */}
                   <section className="mb-6">
                     <div className="rounded-3xl border bg-white p-6">
                       <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
@@ -751,19 +556,23 @@ export default function DosenPage({
                               Absensi Harian
                             </h2>
                             <p className="text-sm text-slate-600 mt-1">
-                              Foto + lokasi (Firestore:{" "}
-                              <code>staff_attendance</code>) • Hari ini:{" "}
-                              <b>{todayISO}</b>
+                              Foto + lokasi • Data:{" "}
+                              <code>staff_attendance</code>
                             </p>
                           </div>
                         </div>
 
+                        {/* ====== METRIC: JAM LIVE + TANGGAL PROFESIONAL ====== */}
                         <div className="grid grid-cols-2 gap-3 w-full md:w-auto">
                           <Metric
-                            label="Waktu Sekarang"
-                            value={new Date().toLocaleTimeString()}
+                            label="Waktu"
+                            value={formatTimeHMS(now)}
+                            suffix="WIB"
                           />
-                          <Metric label="Tanggal" value={todayISO} />
+                          <Metric
+                            label="Tanggal"
+                            value={labelTanggal(todayISO)}
+                          />
                         </div>
                       </div>
 
@@ -780,7 +589,6 @@ export default function DosenPage({
                     </div>
                   </section>
 
-                  {/* 2 kartu seperti karyawan */}
                   <section className="grid gap-6 md:grid-cols-2">
                     <AbsCardLikeKaryawan
                       title="Absen Masuk"
@@ -815,184 +623,141 @@ export default function DosenPage({
                 </>
               )}
 
-              {/* ===== MATA KULIAH ===== */}
-              {activeMenu === "mk" && (
-                <section className="rounded-2xl border bg-white p-5">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <h2 className="font-semibold mb-1">Mata Kuliah</h2>
-                      <p className="text-sm text-slate-600">
-                        Buat mata kuliah yang kamu ajar, lalu assign mahasiswa.
-                      </p>
-                    </div>
-
-                    <div className="flex gap-2">
+              {/* ===== RIWAYAT ===== */}
+              {activeMenu === "riwayat" && (
+                <section>
+                  <div className="rounded-3xl border bg-white p-5">
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <h3 className="font-semibold">Riwayat Terakhir</h3>
                       <button
-                        onClick={() => setOpenCourse(true)}
-                        className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700"
+                        onClick={() => setActiveMenu("absensi")}
+                        className="px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 text-sm"
                       >
-                        <Plus className="w-4 h-4" /> Tambah MK
-                      </button>
-
-                      <button
-                        onClick={() => {
-                          resetMhsForm();
-                          setOpenMhs(true);
-                        }}
-                        className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
-                      >
-                        <Plus className="w-4 h-4" /> Tambah Mahasiswa
+                        Kembali ke Absensi
                       </button>
                     </div>
-                  </div>
 
-                  <div className="mt-5">
-                    {loadingCourses ? (
+                    {histLoading ? (
                       <div className="text-sm text-slate-500 flex items-center gap-2">
                         <Loader2 className="w-4 h-4 animate-spin" />
-                        Memuat mata kuliah...
+                        Memuat riwayat...
                       </div>
-                    ) : coursesErr ? (
-                      <div className="text-sm text-red-600">{coursesErr}</div>
-                    ) : courses.length === 0 ? (
-                      <div className="text-sm text-slate-500">
-                        Belum ada mata kuliah.
+                    ) : histErr ? (
+                      <div className="text-sm text-red-600">{histErr}</div>
+                    ) : history.length === 0 ? (
+                      <div className="text-sm text-slate-600">
+                        Belum ada data.
                       </div>
                     ) : (
-                      <div className="grid sm:grid-cols-2 gap-3">
-                        {courses.map((c) => (
-                          <button
-                            key={c.id}
-                            onClick={() => setActiveCourseId(c.id)}
-                            className={`text-left rounded-2xl border p-4 hover:bg-slate-50 ${
-                              activeCourseId === c.id
-                                ? "border-indigo-300 bg-indigo-50/30"
-                                : ""
-                            }`}
-                          >
-                            <div className="font-semibold">{c.nama}</div>
-                            <div className="text-sm text-slate-600">
-                              {c.kelas ?? "-"} • {c.prodi ?? "-"}
-                            </div>
-                            {activeCourseId === c.id && (
-                              <div className="mt-2 inline-flex items-center gap-2 text-xs text-indigo-700">
-                                <CheckCircle2 className="w-4 h-4" /> Dipilih
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        {history.map((r) => {
+                          const masuk = tsToTime(r.checkInAt);
+                          const pulang = tsToTime(r.checkOutAt);
+                          const mapsUrl =
+                            r.lokasi?.lat != null && r.lokasi?.lng != null
+                              ? `https://www.google.com/maps?q=${r.lokasi.lat},${r.lokasi.lng}`
+                              : null;
+
+                          return (
+                            <div
+                              key={r.id}
+                              className="rounded-xl border p-3 flex gap-3"
+                            >
+                              {r.fotoDataUrl ? (
+                                <img
+                                  src={r.fotoDataUrl}
+                                  className="w-16 h-16 object-cover rounded-md border"
+                                />
+                              ) : (
+                                <div className="w-16 h-16 grid place-items-center rounded-md border bg-slate-50 text-slate-400">
+                                  <Camera className="w-5 h-5" />
+                                </div>
+                              )}
+
+                              <div className="text-sm min-w-0">
+                                <div className="font-medium truncate">
+                                  {labelTanggal(r.tanggalISO || "")}
+                                </div>
+                                <div className="text-slate-600">
+                                  Masuk: {masuk || "-"} • Pulang:{" "}
+                                  {pulang || "-"}
+                                </div>
+
+                                {r.lokasi && (
+                                  <div className="mt-1 text-xs text-slate-600 space-y-0.5">
+                                    <div className="truncate">
+                                      Lat/Lng:{" "}
+                                      {typeof r.lokasi.lat === "number"
+                                        ? r.lokasi.lat.toFixed(6)
+                                        : "-"}
+                                      ,{" "}
+                                      {typeof r.lokasi.lng === "number"
+                                        ? r.lokasi.lng.toFixed(6)
+                                        : "-"}
+                                    </div>
+                                    {typeof r.lokasi.accuracy === "number" && (
+                                      <div>
+                                        Akurasi: ±
+                                        {Math.round(r.lokasi.accuracy)} m
+                                      </div>
+                                    )}
+                                    {mapsUrl && (
+                                      <a
+                                        href={mapsUrl}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-indigo-600 hover:underline"
+                                      >
+                                        Lihat di Google Maps
+                                      </a>
+                                    )}
+                                  </div>
+                                )}
                               </div>
-                            )}
-                          </button>
-                        ))}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
-                  </div>
-
-                  <div className="mt-4 text-xs text-slate-500">
-                    Tips: Setelah memilih MK, buka menu <b>Mahasiswa</b> untuk
-                    melihat daftar mahasiswa per MK.
                   </div>
                 </section>
               )}
 
-              {/* ===== MAHASISWA ===== */}
-              {activeMenu === "mhs" && (
-                <section className="rounded-2xl border bg-white p-5">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <h2 className="font-semibold">
-                        Mahasiswa untuk Mata Kuliah
-                      </h2>
-                      <p className="text-sm text-slate-600">
-                        {activeCourse ? (
-                          <>
-                            <span className="font-medium">
-                              {activeCourse.nama}
-                            </span>{" "}
-                            • {activeCourse.kelas ?? "-"} •{" "}
-                            {activeCourse.prodi ?? "-"}
-                          </>
-                        ) : (
-                          "Pilih mata kuliah dulu."
-                        )}
-                      </p>
+              {/* ===== PANDUAN ===== */}
+              {activeMenu === "panduan" && (
+                <section>
+                  <div className="rounded-3xl border bg-white p-6">
+                    <h3 className="font-semibold">Panduan Absensi</h3>
+                    <div className="mt-3 text-sm text-slate-700 space-y-2">
+                      <div className="rounded-2xl border bg-slate-50 p-4">
+                        <div className="font-medium">1) Absen Masuk</div>
+                        <div className="text-slate-600 mt-1">
+                          Klik <b>Ambil Foto & Lokasi</b> pada kartu Absen
+                          Masuk, lalu simpan check-in.
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border bg-slate-50 p-4">
+                        <div className="font-medium">2) Absen Pulang</div>
+                        <div className="text-slate-600 mt-1">
+                          Absen pulang hanya bisa jika sudah absen masuk.
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border bg-slate-50 p-4">
+                        <div className="font-medium">3) Riwayat</div>
+                        <div className="text-slate-600 mt-1">
+                          Riwayat diambil dari Firestore collection{" "}
+                          <code>staff_attendance</code>.
+                        </div>
+                      </div>
+
+                      <div className="text-xs text-slate-500 mt-2">
+                        Catatan produksi: untuk foto lebih aman & ringan,
+                        sebaiknya upload ke Firebase Storage (bukan simpan
+                        dataUrl di Firestore).
+                      </div>
                     </div>
-
-                    <button
-                      onClick={() => {
-                        resetMhsForm();
-                        setOpenMhs(true);
-                      }}
-                      className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
-                    >
-                      <Plus className="w-4 h-4" /> Tambah Mahasiswa
-                    </button>
-                  </div>
-
-                  <div className="mt-4 grid gap-2">
-                    <div className="text-sm font-medium text-slate-700">
-                      Pilih Mata Kuliah
-                    </div>
-                    <select
-                      value={activeCourseId}
-                      onChange={(e) => setActiveCourseId(e.target.value)}
-                      className="w-full max-w-md px-3 py-2 rounded-xl border bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-                    >
-                      <option value="">-- pilih mata kuliah --</option>
-                      {courses.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.nama} ({c.kelas ?? "-"} / {c.prodi ?? "-"})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="mt-4">
-                    {!activeCourseId ? (
-                      <div className="text-sm text-slate-500">
-                        Belum memilih mata kuliah.
-                      </div>
-                    ) : studLoading ? (
-                      <div className="text-sm text-slate-500 flex items-center gap-2">
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Memuat mahasiswa...
-                      </div>
-                    ) : studErr ? (
-                      <div className="text-sm text-red-600">{studErr}</div>
-                    ) : students.length === 0 ? (
-                      <div className="text-sm text-slate-500">
-                        Belum ada mahasiswa di mata kuliah ini.
-                      </div>
-                    ) : (
-                      <div className="divide-y">
-                        {students.map((s) => (
-                          <div
-                            key={s.uid}
-                            className="py-3 flex items-start gap-3"
-                          >
-                            <div className="flex-1 min-w-0">
-                              <div className="font-medium truncate">
-                                {s.nama}
-                              </div>
-                              <div className="text-sm text-slate-600 truncate">
-                                {s.email}
-                              </div>
-                              <div className="text-xs text-slate-500 mt-1">
-                                {s.nim ? `NIM: ${s.nim}` : ""}
-                                {s.kelas ? ` • ${s.kelas}` : ""}
-                                {s.prodi ? ` • ${s.prodi}` : ""}
-                              </div>
-                            </div>
-
-                            <button
-                              onClick={() => removeStudent(s.uid)}
-                              className="shrink-0 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border hover:bg-slate-50 text-slate-700"
-                              title="Hapus dari MK"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                              <span className="text-sm">Hapus</span>
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
                   </div>
                 </section>
               )}
@@ -1085,7 +850,6 @@ export default function DosenPage({
                 <div className="mt-2 text-xs text-red-600">{camError}</div>
               )}
 
-              {/* preview camera / photo */}
               <div className="mt-3 grid gap-3">
                 {!photoDataUrl ? (
                   <div className="grid gap-2">
@@ -1135,7 +899,6 @@ export default function DosenPage({
               </div>
             </div>
 
-            {/* info/error */}
             {(staffError || staffInfo) && (
               <div className="text-sm">
                 {staffError && <div className="text-red-600">{staffError}</div>}
@@ -1145,7 +908,6 @@ export default function DosenPage({
               </div>
             )}
 
-            {/* tombol simpan */}
             <div className="flex justify-end gap-2 pt-2">
               <button
                 onClick={() => {
@@ -1174,170 +936,7 @@ export default function DosenPage({
 
             <div className="text-xs text-slate-500">
               Catatan: Foto sementara disimpan sebagai <code>fotoDataUrl</code>{" "}
-              di Firestore. Jika kamu mau versi produksi, nanti kita pindah ke
-              Firebase Storage (lebih aman & ringan).
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {/* MODAL: ADD COURSE */}
-      {openCourse && (
-        <Modal title="Tambah Mata Kuliah" onClose={() => setOpenCourse(false)}>
-          <div className="grid gap-3">
-            <Field label="Nama Mata Kuliah">
-              <input
-                value={courseNama}
-                onChange={(e) => setCourseNama(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500/30"
-                placeholder="Contoh: Algoritma"
-              />
-            </Field>
-
-            <div className="grid sm:grid-cols-2 gap-3">
-              <Field label="Kelas (opsional)">
-                <input
-                  value={courseKelas}
-                  onChange={(e) => setCourseKelas(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500/30"
-                  placeholder="IF-1A"
-                />
-              </Field>
-              <Field label="Prodi (opsional)">
-                <input
-                  value={courseProdi}
-                  onChange={(e) => setCourseProdi(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-sky-500/30"
-                  placeholder="Informatika"
-                />
-              </Field>
-            </div>
-
-            {courseErr && (
-              <div className="text-sm text-red-600">{courseErr}</div>
-            )}
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                onClick={() => setOpenCourse(false)}
-                className="px-3 py-2 rounded-xl border hover:bg-slate-50"
-                disabled={courseSaving}
-              >
-                Batal
-              </button>
-              <button
-                onClick={saveCourse}
-                className="px-4 py-2 rounded-xl bg-sky-600 text-white hover:bg-sky-700 disabled:opacity-60 inline-flex items-center gap-2"
-                disabled={courseSaving}
-              >
-                {courseSaving && <Loader2 className="w-4 h-4 animate-spin" />}
-                Simpan
-              </button>
-            </div>
-          </div>
-        </Modal>
-      )}
-
-      {/* MODAL: ADD MAHASISWA */}
-      {openMhs && (
-        <Modal
-          title="Tambah Mahasiswa (buat akun + assign MK)"
-          onClose={() => setOpenMhs(false)}
-        >
-          <div className="grid gap-3">
-            <Field label="Pilih Mata Kuliah">
-              <select
-                value={pickCourseId}
-                onChange={(e) => setPickCourseId(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-              >
-                <option value="">-- pilih mata kuliah --</option>
-                {courses.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.nama} ({c.kelas ?? "-"} / {c.prodi ?? "-"})
-                  </option>
-                ))}
-              </select>
-            </Field>
-
-            <Field label="Nama Mahasiswa">
-              <input
-                value={mhsNama}
-                onChange={(e) => setMhsNama(e.target.value)}
-                className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-                placeholder="Contoh: Rafi Ramadhan"
-              />
-            </Field>
-
-            <div className="grid sm:grid-cols-2 gap-3">
-              <Field label="Email Mahasiswa">
-                <input
-                  value={mhsEmail}
-                  onChange={(e) => setMhsEmail(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-                  placeholder="rafi@uni.ac.id"
-                />
-              </Field>
-              <Field label="Password (manual dosen)">
-                <input
-                  value={mhsPass}
-                  onChange={(e) => setMhsPass(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-                  placeholder="min 6 karakter"
-                />
-              </Field>
-            </div>
-
-            <div className="grid sm:grid-cols-3 gap-3">
-              <Field label="NIM (opsional)">
-                <input
-                  value={mhsNim}
-                  onChange={(e) => setMhsNim(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-                  placeholder="231234567"
-                />
-              </Field>
-              <Field label="Kelas (opsional)">
-                <input
-                  value={mhsKelas}
-                  onChange={(e) => setMhsKelas(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-                  placeholder="IF-1A"
-                />
-              </Field>
-              <Field label="Prodi (opsional)">
-                <input
-                  value={mhsProdi}
-                  onChange={(e) => setMhsProdi(e.target.value)}
-                  className="w-full px-3 py-2 rounded-xl border focus:outline-none focus:ring-2 focus:ring-indigo-500/30"
-                  placeholder="Informatika"
-                />
-              </Field>
-            </div>
-
-            <div className="text-xs text-slate-500">
-              Password hanya untuk login mahasiswa. Sistem tidak menyimpan
-              password di Firestore.
-            </div>
-
-            {mhsErr && <div className="text-sm text-red-600">{mhsErr}</div>}
-
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                onClick={() => setOpenMhs(false)}
-                className="px-3 py-2 rounded-xl border hover:bg-slate-50"
-                disabled={mhsSaving}
-              >
-                Batal
-              </button>
-              <button
-                onClick={saveMahasiswaAndAssign}
-                className="px-4 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60 inline-flex items-center gap-2"
-                disabled={!canSubmitMhs || mhsSaving}
-              >
-                {mhsSaving && <Loader2 className="w-4 h-4 animate-spin" />}
-                Buat Akun & Assign
-              </button>
+              di Firestore. Untuk versi produksi, pindah ke Firebase Storage.
             </div>
           </div>
         </Modal>
@@ -1346,12 +945,31 @@ export default function DosenPage({
   );
 }
 
-/* ===== Sub UI ===== */
-function Metric({ label, value }: { label: string; value: string }) {
+/* ===== sub-komponen ===== */
+function Metric({
+  label,
+  value,
+  suffix,
+}: {
+  label: string;
+  value: string;
+  suffix?: string;
+}) {
   return (
-    <div className="rounded-2xl border bg-white/80 backdrop-blur px-4 py-2">
+    <div className="rounded-2xl border bg-white/80 backdrop-blur px-4 py-3">
       <div className="text-[11px] tracking-widest text-slate-500">{label}</div>
-      <div className="text-[15px] font-semibold">{value}</div>
+
+      {/* lebih profesional: angka rapi + lebih tegas */}
+      <div className="mt-0.5 flex items-baseline gap-2">
+        <div className="text-[18px] font-semibold tabular-nums leading-none">
+          {value}
+        </div>
+        {suffix ? (
+          <div className="text-[11px] tracking-widest text-slate-500">
+            {suffix}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
@@ -1439,21 +1057,6 @@ function Modal({
         </div>
         <div className="px-5 py-4 overflow-y-auto flex-1">{children}</div>
       </div>
-    </div>
-  );
-}
-
-function Field({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div>
-      <div className="text-sm font-medium text-slate-700 mb-1">{label}</div>
-      {children}
     </div>
   );
 }

@@ -117,16 +117,16 @@ export default function Home() {
                 Sistem Absensi
               </p>
               <h1 className="text-[14px] sm:text-[15px] font-semibold truncate">
-                Absensi Fakultas — Portal Login
+                UNIVERSITAS TULUNGAGUNG
               </h1>
             </div>
           </div>
 
           <div className="hidden sm:flex items-center gap-2 text-[12px] text-slate-700">
-            <span className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-slate-50/80 px-3 py-1">
+            {/* <span className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-slate-50/80 px-3 py-1">
               <Clock className="w-4 h-4" />
               Realtime • Aman • Role-based
-            </span>
+            </span> */}
           </div>
         </div>
       </header>
@@ -160,7 +160,7 @@ export default function Home() {
                     </div>
 
                     <h2 className="mt-2.5 text-[18px] sm:text-[20px] font-semibold leading-snug">
-                      Login cepat, rapi, dan siap dipakai operasional
+                      Selamat Datang , Silakan masuk ke akun Anda
                     </h2>
 
                     <p className="mt-2 text-slate-700/90 leading-relaxed text-[13px]">
@@ -217,7 +217,7 @@ export default function Home() {
                   </div>
                   <div>
                     <p className="text-[10px] uppercase tracking-[0.20em] text-indigo-700 font-semibold">
-                      Portal Login
+                      Login
                     </p>
                     <h3 className="text-[15px] sm:text-base font-semibold">
                       Masuk ke Akun Anda
@@ -244,9 +244,9 @@ export default function Home() {
                         autoComplete="username"
                       />
                     </div>
-                    <p className="mt-1 text-[12px] text-slate-600">
+                    {/* <p className="mt-1 text-[12px] text-slate-600">
                       Username dicari di koleksi <code>usernames</code>.
-                    </p>
+                    </p> */}
                   </div>
 
                   <div>
@@ -328,8 +328,7 @@ export default function Home() {
                   </button>
 
                   <div className="text-[12px] text-slate-600 leading-relaxed">
-                    Email disimpan di Firestore <code>users</code>, login
-                    menggunakan username.
+                    login menggunakan username.
                   </div>
                 </form>
               </div>
