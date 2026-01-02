@@ -20,7 +20,7 @@ import {
 } from "lucide-react";
 import type { UserLite } from "../types";
 
-import { db, createSecondaryAuth } from "../lib/firebase";
+import { db, createSecondaryAuth, auth } from "../lib/firebase";
 import {
   addDoc,
   collection,
@@ -39,7 +39,6 @@ import {
   signOut as signOutAuth,
   sendPasswordResetEmail,
 } from "firebase/auth";
-import { auth } from "../lib/firebase";
 
 type Role = "dosen" | "karyawan" | "mahasiswa" | "superadmin";
 
@@ -76,6 +75,8 @@ type UserRow = {
   username?: string | null;
 };
 
+type MenuKey = "dashboard" | "users" | "master" | "catatan";
+
 function cx(...a: Array<string | false | null | undefined>) {
   return a.filter(Boolean).join(" ");
 }
@@ -97,46 +98,35 @@ function usernameFromEmail(email: string) {
 function SideItem({
   icon,
   label,
-  href,
   active = false,
   danger = false,
   onClick,
 }: {
   icon: React.ReactNode;
   label: string;
-  href?: string;
   active?: boolean;
   danger?: boolean;
   onClick?: () => void;
 }) {
   const base =
-    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition select-none";
+    "w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm transition select-none border";
   const cls = danger
     ? cx(
         base,
-        "text-red-700 hover:bg-red-50 border border-transparent",
+        "text-red-700 hover:bg-red-50 border-transparent",
         active && "bg-red-50 border-red-100"
       )
     : cx(
         base,
-        "text-slate-700 hover:bg-slate-100 border border-transparent",
+        "text-slate-700 hover:bg-slate-100 border-transparent",
         active && "bg-indigo-50 text-indigo-700 border-indigo-100"
       );
 
-  if (onClick) {
-    return (
-      <button type="button" onClick={onClick} className={cls}>
-        <span className="shrink-0">{icon}</span>
-        <span className="truncate">{label}</span>
-      </button>
-    );
-  }
-
   return (
-    <a href={href || "#"} className={cls}>
+    <button type="button" onClick={onClick} className={cls}>
       <span className="shrink-0">{icon}</span>
       <span className="truncate">{label}</span>
-    </a>
+    </button>
   );
 }
 
@@ -147,6 +137,11 @@ export default function SuperAdminPage({
   user: UserLite;
   onLogout: () => void;
 }) {
+  /** =========================
+   * UI: menu aktif (INI BARU, untuk ganti konten)
+   * ========================= */
+  const [activeMenu, setActiveMenu] = useState<MenuKey>("users");
+
   /** =========================
    * A) MASTER CIVITAS (master_dosen)
    * ========================= */
@@ -617,23 +612,26 @@ export default function SuperAdminPage({
               <SideItem
                 icon={<LayoutDashboard className="w-4 h-4" />}
                 label="Dashboard"
-                href="#top"
-                active
+                active={activeMenu === "dashboard"}
+                onClick={() => setActiveMenu("dashboard")}
               />
               <SideItem
                 icon={<Users className="w-4 h-4" />}
                 label="Manajemen Akun"
-                href="#users"
+                active={activeMenu === "users"}
+                onClick={() => setActiveMenu("users")}
               />
               <SideItem
                 icon={<Database className="w-4 h-4" />}
                 label="Master Civitas"
-                href="#master"
+                active={activeMenu === "master"}
+                onClick={() => setActiveMenu("master")}
               />
               <SideItem
                 icon={<FileSpreadsheet className="w-4 h-4" />}
                 label="Catatan"
-                href="#catatan"
+                active={activeMenu === "catatan"}
+                onClick={() => setActiveMenu("catatan")}
               />
             </nav>
 
@@ -654,269 +652,317 @@ export default function SuperAdminPage({
 
         {/* CONTENT */}
         <div className="flex-1 min-w-0">
-          {/* Topbar area (kanan, seperti contoh ada header atas) */}
-          <div id="top" className="sticky top-0 z-20 bg-slate-50">
+          {/* Topbar area */}
+          <div className="sticky top-0 z-20 bg-slate-50">
             <div className="px-4 sm:px-6 pt-4">
               <Topbar name={user.name} role={user.role} onLogout={onLogout} />
             </div>
             <div className="h-4" />
           </div>
 
-          {/* Main scrollable content */}
+          {/* Main content */}
           <div className="px-4 sm:px-6 pb-10">
             <main className="max-w-6xl mx-auto grid gap-6">
-              {/* ===== USERS ===== */}
-              <section id="users" className="rounded-2xl border bg-white p-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h2 className="font-semibold">Manajemen Akun Login</h2>
-                    <p className="text-sm text-slate-600 mt-1">
-                      Aksi cepat: <b>Edit</b>, <b>Reset Password</b>,{" "}
-                      <b>Disable/Aktifkan</b>. (Mode gratis: disable adalah
-                      “hapus paling aman”.)
-                    </p>
+              {/* ===== DASHBOARD (placeholder ringan) ===== */}
+              {activeMenu === "dashboard" && (
+                <section className="rounded-2xl border bg-white p-5">
+                  <h2 className="font-semibold">Dashboard</h2>
+                  <p className="text-sm text-slate-600 mt-2">
+                    Silakan pilih menu di sidebar untuk mengelola data.
+                  </p>
+                  <div className="mt-4 grid sm:grid-cols-3 gap-3">
+                    <div className="rounded-xl border p-4">
+                      <div className="text-xs text-slate-500">Total Users</div>
+                      <div className="text-2xl font-bold mt-1">
+                        {usersLoading ? "…" : users.length}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border p-4">
+                      <div className="text-xs text-slate-500">
+                        Total Master Civitas
+                      </div>
+                      <div className="text-2xl font-bold mt-1">
+                        {loadingList ? "…" : items.length}
+                      </div>
+                    </div>
+                    <div className="rounded-xl border p-4">
+                      <div className="text-xs text-slate-500">Role Anda</div>
+                      <div className="text-2xl font-bold mt-1">
+                        {String(user.role).toUpperCase()}
+                      </div>
+                    </div>
                   </div>
-                </div>
+                </section>
+              )}
 
-                <div className="mt-5">
-                  {usersLoading ? (
-                    <div className="text-sm text-slate-500 flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Memuat users...
+              {/* ===== USERS ===== */}
+              {activeMenu === "users" && (
+                <section className="rounded-2xl border bg-white p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="font-semibold">Manajemen Akun Login</h2>
+                      <p className="text-sm text-slate-600 mt-1">
+                        Aksi cepat: <b>Edit</b>, <b>Reset Password</b>,{" "}
+                        <b>Disable/Aktifkan</b>. (Mode gratis: disable adalah
+                        “hapus paling aman”.)
+                      </p>
                     </div>
-                  ) : usersErr ? (
-                    <div className="text-sm text-red-600">{usersErr}</div>
-                  ) : users.length === 0 ? (
-                    <div className="text-sm text-slate-500">
-                      Belum ada user.
+                  </div>
+
+                  <div className="mt-5">
+                    {usersLoading ? (
+                      <div className="text-sm text-slate-500 flex items-center gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Memuat users...
+                      </div>
+                    ) : usersErr ? (
+                      <div className="text-sm text-red-600">{usersErr}</div>
+                    ) : users.length === 0 ? (
+                      <div className="text-sm text-slate-500">
+                        Belum ada user.
+                      </div>
+                    ) : (
+                      <div className="grid gap-3">
+                        {users.map((u) => {
+                          const busy = busyUid === u.id;
+                          const uname =
+                            u.username || usernameFromEmail(u.email);
+                          return (
+                            <div
+                              key={u.id}
+                              className={cx(
+                                "rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center gap-3",
+                                u.disabled && "bg-slate-50"
+                              )}
+                            >
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <div className="font-semibold truncate">
+                                    {u.name}
+                                  </div>
+
+                                  <span className="text-xs px-2 py-0.5 rounded-full border bg-white text-slate-700">
+                                    {String(u.role).toUpperCase()}
+                                  </span>
+
+                                  {u.disabled ? (
+                                    <span className="text-xs px-2 py-0.5 rounded-full border border-red-200 bg-red-50 text-red-700 inline-flex items-center gap-1">
+                                      <Ban className="w-3 h-3" />
+                                      DISABLED
+                                    </span>
+                                  ) : (
+                                    <span className="text-xs px-2 py-0.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 inline-flex items-center gap-1">
+                                      <CheckCircle2 className="w-3 h-3" />
+                                      ACTIVE
+                                    </span>
+                                  )}
+                                </div>
+
+                                <div className="text-sm text-slate-600 truncate mt-1">
+                                  {u.email}
+                                </div>
+
+                                <div className="mt-1 text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-1">
+                                  <span>
+                                    UID:{" "}
+                                    <span className="text-slate-400">
+                                      {u.id}
+                                    </span>
+                                  </span>
+                                  <span className="inline-flex items-center gap-1">
+                                    <UserIcon className="w-3.5 h-3.5 text-slate-400" />
+                                    Username:{" "}
+                                    <span className="font-medium text-slate-700">
+                                      {uname}
+                                    </span>
+                                  </span>
+                                  {u.fakultas ? (
+                                    <span>Fakultas: {u.fakultas}</span>
+                                  ) : null}
+                                  {u.prodi ? (
+                                    <span>Prodi: {u.prodi}</span>
+                                  ) : null}
+                                  {u.kelas ? (
+                                    <span>Kelas: {u.kelas}</span>
+                                  ) : null}
+                                  {u.nim ? <span>NIM: {u.nim}</span> : null}
+                                </div>
+                              </div>
+
+                              <div className="flex flex-wrap gap-2 justify-end">
+                                <button
+                                  onClick={() => openEditUser(u)}
+                                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-slate-50 text-slate-700"
+                                >
+                                  <Pencil className="w-4 h-4" />
+                                  Edit
+                                </button>
+
+                                <button
+                                  onClick={() => doResetPassword(u.email)}
+                                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-slate-50 text-slate-700"
+                                >
+                                  <Mail className="w-4 h-4" />
+                                  Reset PW
+                                </button>
+
+                                <button
+                                  onClick={() => toggleDisable(u)}
+                                  disabled={busy}
+                                  className={cx(
+                                    "inline-flex items-center gap-2 px-3 py-2 rounded-lg border",
+                                    u.disabled
+                                      ? "border-emerald-200 text-emerald-700 hover:bg-emerald-50"
+                                      : "border-red-200 text-red-700 hover:bg-red-50",
+                                    busy && "opacity-60"
+                                  )}
+                                >
+                                  {busy ? (
+                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                  ) : u.disabled ? (
+                                    <CheckCircle2 className="w-4 h-4" />
+                                  ) : (
+                                    <Ban className="w-4 h-4" />
+                                  )}
+                                  {u.disabled ? "Aktifkan" : "Disable"}
+                                </button>
+
+                                <button
+                                  onClick={() => deleteProfileOnly(u)}
+                                  disabled={busy}
+                                  className={cx(
+                                    "inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50",
+                                    busy && "opacity-60"
+                                  )}
+                                  title="Hapus profil Firestore saja (Auth tetap ada)"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                  Hapus Profil
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {/* ===== MASTER CIVITAS ===== */}
+              {activeMenu === "master" && (
+                <section className="rounded-2xl border bg-white p-5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="font-semibold">Master Civitas</h2>
+                      <p className="text-sm text-slate-600 mt-1">
+                        Data master + opsional buat akun login.
+                      </p>
                     </div>
-                  ) : (
-                    <div className="grid gap-3">
-                      {users.map((u) => {
-                        const busy = busyUid === u.id;
-                        const uname = u.username || usernameFromEmail(u.email);
-                        return (
+
+                    <button
+                      onClick={() => {
+                        resetAddForm();
+                        setOpenAdd(true);
+                      }}
+                      className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Tambah
+                    </button>
+                  </div>
+
+                  <div className="mt-5">
+                    {loadingList ? (
+                      <div className="text-sm text-slate-500 flex items-center gap-2">
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Memuat data...
+                      </div>
+                    ) : listError ? (
+                      <div className="text-sm text-red-600">{listError}</div>
+                    ) : items.length === 0 ? (
+                      <div className="text-sm text-slate-500">
+                        Belum ada data.
+                      </div>
+                    ) : (
+                      <div className="grid gap-3">
+                        {items.map((d) => (
                           <div
-                            key={u.id}
-                            className={cx(
-                              "rounded-xl border p-4 flex flex-col sm:flex-row sm:items-center gap-3",
-                              u.disabled && "bg-slate-50"
-                            )}
+                            key={d.id}
+                            className="rounded-xl border p-4 flex items-start gap-3"
                           >
                             <div className="flex-1 min-w-0">
                               <div className="flex items-center gap-2 flex-wrap">
                                 <div className="font-semibold truncate">
-                                  {u.name}
+                                  {d.nama}
                                 </div>
-
                                 <span className="text-xs px-2 py-0.5 rounded-full border bg-white text-slate-700">
-                                  {String(u.role).toUpperCase()}
+                                  {String(d.role).toUpperCase()}
                                 </span>
 
-                                {u.disabled ? (
-                                  <span className="text-xs px-2 py-0.5 rounded-full border border-red-200 bg-red-50 text-red-700 inline-flex items-center gap-1">
-                                    <Ban className="w-3 h-3" />
-                                    DISABLED
-                                  </span>
-                                ) : (
+                                {d.loginActive && (
                                   <span className="text-xs px-2 py-0.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 inline-flex items-center gap-1">
-                                    <CheckCircle2 className="w-3 h-3" />
-                                    ACTIVE
+                                    <ShieldCheck className="w-3 h-3" />
+                                    Akun Login Aktif
                                   </span>
                                 )}
                               </div>
 
                               <div className="text-sm text-slate-600 truncate mt-1">
-                                {u.email}
+                                {d.email}
                               </div>
 
-                              <div className="mt-1 text-xs text-slate-500 flex flex-wrap gap-x-3 gap-y-1">
-                                <span>
-                                  UID:{" "}
-                                  <span className="text-slate-400">{u.id}</span>
-                                </span>
-                                <span className="inline-flex items-center gap-1">
-                                  <UserIcon className="w-3.5 h-3.5 text-slate-400" />
-                                  Username:{" "}
-                                  <span className="font-medium text-slate-700">
-                                    {uname}
-                                  </span>
-                                </span>
-                                {u.fakultas ? (
-                                  <span>Fakultas: {u.fakultas}</span>
-                                ) : null}
-                                {u.prodi ? <span>Prodi: {u.prodi}</span> : null}
-                                {u.kelas ? <span>Kelas: {u.kelas}</span> : null}
-                                {u.nim ? <span>NIM: {u.nim}</span> : null}
-                              </div>
-                            </div>
+                              {(d.nidn || d.fakultas || d.prodi) && (
+                                <div className="mt-1 text-xs text-slate-500">
+                                  {d.role === "dosen" && d.nidn
+                                    ? `NIDN: ${d.nidn}`
+                                    : ""}
+                                  {d.fakultas
+                                    ? ` • Fakultas: ${d.fakultas}`
+                                    : ""}
+                                  {d.prodi ? ` • Prodi: ${d.prodi}` : ""}
+                                </div>
+                              )}
 
-                            <div className="flex flex-wrap gap-2 justify-end">
-                              <button
-                                onClick={() => openEditUser(u)}
-                                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-slate-50 text-slate-700"
-                              >
-                                <Pencil className="w-4 h-4" />
-                                Edit
-                              </button>
-
-                              <button
-                                onClick={() => doResetPassword(u.email)}
-                                className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-slate-50 text-slate-700"
-                              >
-                                <Mail className="w-4 h-4" />
-                                Reset PW
-                              </button>
-
-                              <button
-                                onClick={() => toggleDisable(u)}
-                                disabled={busy}
-                                className={cx(
-                                  "inline-flex items-center gap-2 px-3 py-2 rounded-lg border",
-                                  u.disabled
-                                    ? "border-emerald-200 text-emerald-700 hover:bg-emerald-50"
-                                    : "border-red-200 text-red-700 hover:bg-red-50",
-                                  busy && "opacity-60"
-                                )}
-                              >
-                                {busy ? (
-                                  <Loader2 className="w-4 h-4 animate-spin" />
-                                ) : u.disabled ? (
-                                  <CheckCircle2 className="w-4 h-4" />
-                                ) : (
-                                  <Ban className="w-4 h-4" />
-                                )}
-                                {u.disabled ? "Aktifkan" : "Disable"}
-                              </button>
-
-                              <button
-                                onClick={() => deleteProfileOnly(u)}
-                                disabled={busy}
-                                className={cx(
-                                  "inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50",
-                                  busy && "opacity-60"
-                                )}
-                                title="Hapus profil Firestore saja (Auth tetap ada)"
-                              >
-                                <Trash2 className="w-4 h-4" />
-                                Hapus Profil
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
-              </section>
-
-              {/* ===== MASTER CIVITAS ===== */}
-              <section id="master" className="rounded-2xl border bg-white p-5">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <h2 className="font-semibold">Master Civitas</h2>
-                    <p className="text-sm text-slate-600 mt-1">
-                      Data master + opsional buat akun login.
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      resetAddForm();
-                      setOpenAdd(true);
-                    }}
-                    className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700"
-                  >
-                    <Plus className="w-4 h-4" />
-                    Tambah
-                  </button>
-                </div>
-
-                <div className="mt-5">
-                  {loadingList ? (
-                    <div className="text-sm text-slate-500 flex items-center gap-2">
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Memuat data...
-                    </div>
-                  ) : listError ? (
-                    <div className="text-sm text-red-600">{listError}</div>
-                  ) : items.length === 0 ? (
-                    <div className="text-sm text-slate-500">
-                      Belum ada data.
-                    </div>
-                  ) : (
-                    <div className="grid gap-3">
-                      {items.map((d) => (
-                        <div
-                          key={d.id}
-                          className="rounded-xl border p-4 flex items-start gap-3"
-                        >
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <div className="font-semibold truncate">
-                                {d.nama}
-                              </div>
-                              <span className="text-xs px-2 py-0.5 rounded-full border bg-white text-slate-700">
-                                {String(d.role).toUpperCase()}
-                              </span>
-
-                              {d.loginActive && (
-                                <span className="text-xs px-2 py-0.5 rounded-full border border-emerald-200 bg-emerald-50 text-emerald-700 inline-flex items-center gap-1">
-                                  <ShieldCheck className="w-3 h-3" />
-                                  Akun Login Aktif
-                                </span>
+                              {d.authUid && (
+                                <div className="mt-1 text-xs text-slate-400">
+                                  authUid: {d.authUid}
+                                </div>
                               )}
                             </div>
 
-                            <div className="text-sm text-slate-600 truncate mt-1">
-                              {d.email}
-                            </div>
-
-                            {(d.nidn || d.fakultas || d.prodi) && (
-                              <div className="mt-1 text-xs text-slate-500">
-                                {d.role === "dosen" && d.nidn
-                                  ? `NIDN: ${d.nidn}`
-                                  : ""}
-                                {d.fakultas ? ` • Fakultas: ${d.fakultas}` : ""}
-                                {d.prodi ? ` • Prodi: ${d.prodi}` : ""}
-                              </div>
-                            )}
-
-                            {d.authUid && (
-                              <div className="mt-1 text-xs text-slate-400">
-                                authUid: {d.authUid}
-                              </div>
-                            )}
+                            <button
+                              onClick={() => handleDeleteMaster(d.id)}
+                              className="shrink-0 inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-slate-50 text-slate-700"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                              Hapus
+                            </button>
                           </div>
-
-                          <button
-                            onClick={() => handleDeleteMaster(d.id)}
-                            className="shrink-0 inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-slate-50 text-slate-700"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                            Hapus
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </section>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </section>
+              )}
 
               {/* ===== CATATAN ===== */}
-              <section id="catatan" className="rounded-2xl border bg-white p-5">
-                <h2 className="font-semibold">Catatan</h2>
-                <div className="text-sm text-slate-600 mt-2 leading-relaxed">
-                  - Mode gratis: <b>Disable</b> adalah cara terbaik untuk
-                  “menghapus akses” user.
-                  <br />
-                  - User disabled akan otomatis logout saat mencoba login (di
-                  App.tsx).
-                  <br />- Tombol <b>Hapus Profil</b> hanya menghapus dokumen
-                  Firestore, akun Auth tetap ada.
-                  <br />- Login username memakai koleksi <code>usernames</code>.
-                </div>
-              </section>
+              {activeMenu === "catatan" && (
+                <section className="rounded-2xl border bg-white p-5">
+                  <h2 className="font-semibold">Catatan</h2>
+                  <div className="text-sm text-slate-600 mt-2 leading-relaxed">
+                    - Mode gratis: <b>Disable</b> adalah cara terbaik untuk
+                    “menghapus akses” user.
+                    <br />
+                    - User disabled akan otomatis logout saat mencoba login (di
+                    App.tsx).
+                    <br />- Tombol <b>Hapus Profil</b> hanya menghapus dokumen
+                    Firestore, akun Auth tetap ada.
+                    <br />- Login username memakai koleksi{" "}
+                    <code>usernames</code>.
+                  </div>
+                </section>
+              )}
             </main>
           </div>
         </div>

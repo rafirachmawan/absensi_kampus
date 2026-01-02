@@ -16,6 +16,7 @@ import {
   LayoutDashboard,
   BookOpen,
   Users,
+  CalendarDays,
 } from "lucide-react";
 
 import { db, firebaseConfig } from "../lib/firebase";
@@ -170,6 +171,35 @@ export default function DosenPage({
 
   const todayISO = formatISO(new Date());
   const staffDocId = `${user.id}_${todayISO}`;
+
+  // (tambahan ringan untuk UI seperti karyawan) - status hari ini
+  const [todayRec, setTodayRec] = useState<{
+    checkInAt?: any;
+    checkOutAt?: any;
+  } | null>(null);
+
+  useEffect(() => {
+    const ref = doc(db, "staff_attendance", staffDocId);
+    const unsub = onSnapshot(
+      ref,
+      (snap) => {
+        if (!snap.exists()) {
+          setTodayRec(null);
+          return;
+        }
+        const data = snap.data() as any;
+        setTodayRec({
+          checkInAt: data.checkInAt,
+          checkOutAt: data.checkOutAt,
+        });
+      },
+      () => {
+        // jika error, biarkan UI tetap jalan
+        setTodayRec(null);
+      }
+    );
+    return () => unsub();
+  }, [staffDocId]);
 
   // modal checkin (foto+lokasi)
   const [openCheckIn, setOpenCheckIn] = useState(false);
@@ -625,9 +655,26 @@ export default function DosenPage({
     }
   }
 
+  // ======= UI util untuk badge jam (tanpa ubah logika data) =======
+  function tsToTime(ts: any) {
+    try {
+      const d: Date =
+        typeof ts?.toDate === "function" ? ts.toDate() : new Date(ts);
+      if (isNaN(d.getTime())) return "";
+      return d.toTimeString().slice(0, 5);
+    } catch {
+      return "";
+    }
+  }
+
+  const checkedMasuk = !!todayRec?.checkInAt;
+  const checkedPulang = !!todayRec?.checkOutAt;
+  const masukTime = tsToTime(todayRec?.checkInAt);
+  const pulangTime = tsToTime(todayRec?.checkOutAt);
+
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
-      {/* ===== LAYOUT: SIDEBAR + CONTENT (model seperti yang kamu minta) ===== */}
+      {/* ===== LAYOUT: SIDEBAR + CONTENT ===== */}
       <div className="flex min-h-screen">
         {/* SIDEBAR */}
         <aside className="hidden md:flex w-64 shrink-0 border-r bg-white">
@@ -667,7 +714,6 @@ export default function DosenPage({
               />
             </nav>
 
-            {/* hint kecil */}
             <div className="mt-auto pt-4 text-xs text-slate-400 px-2">
               Klik menu di kiri untuk menampilkan konten.
             </div>
@@ -676,7 +722,7 @@ export default function DosenPage({
 
         {/* CONTENT */}
         <div className="flex-1 min-w-0">
-          {/* topbar di kanan */}
+          {/* topbar */}
           <div className="sticky top-0 z-20 bg-slate-50">
             <div className="px-4 sm:px-6 pt-4">
               <Topbar name={user.name} role={user.role} onLogout={onLogout} />
@@ -686,59 +732,90 @@ export default function DosenPage({
 
           <div className="px-4 sm:px-6 pb-10">
             <main className="max-w-6xl mx-auto">
-              {/* ===== 1) ABSENSI ===== */}
+              {/* ===== ABSENSI (MODEL KARYAWAN) ===== */}
               {activeMenu === "absensi" && (
-                <section className="rounded-2xl border bg-white p-5">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <h2 className="font-semibold">Absensi Dosen</h2>
-                      <p className="text-sm text-slate-600">
-                        Check-in & check-out (Firestore:{" "}
-                        <code>staff_attendance</code>)
-                      </p>
-                    </div>
-                    <div className="flex gap-2">
-                      <button
-                        onClick={openCheckInModal}
-                        disabled={staffSaving}
-                        className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
-                      >
-                        {staffSaving ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <LogIn className="w-4 h-4" />
-                        )}
-                        Check-in
-                      </button>
-                      <button
-                        onClick={handleCheckOut}
-                        disabled={staffSaving}
-                        className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-slate-800 text-white hover:bg-slate-900 disabled:opacity-60"
-                      >
-                        {staffSaving ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <LogOut className="w-4 h-4" />
-                        )}
-                        Check-out
-                      </button>
-                    </div>
-                  </div>
+                <>
+                  {/* HERO seperti karyawan */}
+                  <section className="mb-6">
+                    <div className="rounded-3xl border bg-white p-6">
+                      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+                        <div className="flex items-start gap-3">
+                          <div className="w-11 h-11 rounded-2xl bg-indigo-600/10 text-indigo-700 grid place-items-center">
+                            <CalendarDays className="w-6 h-6" />
+                          </div>
+                          <div>
+                            <div className="text-[11px] tracking-widest text-slate-500">
+                              DOSEN
+                            </div>
+                            <h2 className="text-xl font-semibold leading-tight">
+                              Absensi Harian
+                            </h2>
+                            <p className="text-sm text-slate-600 mt-1">
+                              Foto + lokasi (Firestore:{" "}
+                              <code>staff_attendance</code>) • Hari ini:{" "}
+                              <b>{todayISO}</b>
+                            </p>
+                          </div>
+                        </div>
 
-                  {(staffError || staffInfo) && (
-                    <div className="mt-3 text-sm">
-                      {staffError && (
-                        <div className="text-red-600">{staffError}</div>
-                      )}
-                      {staffInfo && (
-                        <div className="text-emerald-700">{staffInfo}</div>
+                        <div className="grid grid-cols-2 gap-3 w-full md:w-auto">
+                          <Metric
+                            label="Waktu Sekarang"
+                            value={new Date().toLocaleTimeString()}
+                          />
+                          <Metric label="Tanggal" value={todayISO} />
+                        </div>
+                      </div>
+
+                      {(staffError || staffInfo) && (
+                        <div className="mt-3 text-sm">
+                          {staffError && (
+                            <div className="text-red-600">{staffError}</div>
+                          )}
+                          {staffInfo && (
+                            <div className="text-emerald-700">{staffInfo}</div>
+                          )}
+                        </div>
                       )}
                     </div>
-                  )}
-                </section>
+                  </section>
+
+                  {/* 2 kartu seperti karyawan */}
+                  <section className="grid gap-6 md:grid-cols-2">
+                    <AbsCardLikeKaryawan
+                      title="Absen Masuk (Check-in)"
+                      icon={<LogIn className="w-5 h-5" />}
+                      subtitle="Wajib foto + lokasi"
+                      checked={checkedMasuk}
+                      checkedLabel={masukTime || "Sudah"}
+                      loading={staffSaving}
+                      onDo={() => openCheckInModal()}
+                      disabled={staffSaving}
+                      cta="Ambil Foto & Lokasi"
+                    />
+
+                    <AbsCardLikeKaryawan
+                      title="Absen Pulang (Check-out)"
+                      icon={<LogOut className="w-5 h-5" />}
+                      subtitle="Simpan jam check-out"
+                      checked={checkedPulang}
+                      checkedLabel={pulangTime || "Sudah"}
+                      loading={staffSaving}
+                      onDo={() => {
+                        if (!checkedMasuk) {
+                          alert("Anda belum check-in hari ini.");
+                          return;
+                        }
+                        handleCheckOut();
+                      }}
+                      disabled={staffSaving}
+                      cta="Check-out Sekarang"
+                    />
+                  </section>
+                </>
               )}
 
-              {/* ===== 2) MATA KULIAH ===== */}
+              {/* ===== MATA KULIAH ===== */}
               {activeMenu === "mk" && (
                 <section className="rounded-2xl border bg-white p-5">
                   <div className="flex items-start justify-between gap-3">
@@ -808,7 +885,6 @@ export default function DosenPage({
                     )}
                   </div>
 
-                  {/* hint singkat: biar dosen paham mahasiswa ada di tab Mahasiswa */}
                   <div className="mt-4 text-xs text-slate-500">
                     Tips: Setelah memilih MK, buka menu <b>Mahasiswa</b> untuk
                     melihat daftar mahasiswa per MK.
@@ -816,7 +892,7 @@ export default function DosenPage({
                 </section>
               )}
 
-              {/* ===== 3) MAHASISWA ===== */}
+              {/* ===== MAHASISWA ===== */}
               {activeMenu === "mhs" && (
                 <section className="rounded-2xl border bg-white p-5">
                   <div className="flex items-center justify-between gap-3">
@@ -839,7 +915,6 @@ export default function DosenPage({
                       </p>
                     </div>
 
-                    {/* tombol tambah mahasiswa tetap ada di tab mahasiswa juga */}
                     <button
                       onClick={() => {
                         resetMhsForm();
@@ -851,7 +926,6 @@ export default function DosenPage({
                     </button>
                   </div>
 
-                  {/* selector MK kecil (tanpa ubah logika, cuma UI) */}
                   <div className="mt-4 grid gap-2">
                     <div className="text-sm font-medium text-slate-700">
                       Pilih Mata Kuliah
@@ -1272,6 +1346,74 @@ export default function DosenPage({
   );
 }
 
+/* ===== Sub UI ===== */
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border bg-white/80 backdrop-blur px-4 py-2">
+      <div className="text-[11px] tracking-widest text-slate-500">{label}</div>
+      <div className="text-[15px] font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function AbsCardLikeKaryawan({
+  title,
+  icon,
+  subtitle,
+  checked,
+  checkedLabel,
+  loading,
+  onDo,
+  disabled,
+  cta,
+}: {
+  title: string;
+  icon: React.ReactNode;
+  subtitle: string;
+  checked: boolean;
+  checkedLabel?: string;
+  loading: boolean;
+  onDo: () => void;
+  disabled: boolean;
+  cta: string;
+}) {
+  return (
+    <div className="rounded-3xl border bg-white p-5">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="w-11 h-11 rounded-xl bg-indigo-600/10 text-indigo-700 grid place-items-center">
+            {icon}
+          </div>
+          <div>
+            <h4 className="font-semibold">{title}</h4>
+            <p className="text-sm text-slate-600">{subtitle}</p>
+          </div>
+        </div>
+
+        {checked ? (
+          <span className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 text-emerald-700 px-3 py-1.5 text-sm">
+            <CheckCircle2 className="w-4 h-4" /> {checkedLabel || "Sudah"}
+          </span>
+        ) : (
+          <button
+            onClick={onDo}
+            disabled={disabled}
+            className={cx(
+              "inline-flex items-center gap-2 rounded-lg px-3 py-1.5 text-sm shadow-sm",
+              disabled
+                ? "bg-slate-200 text-slate-500 cursor-not-allowed"
+                : "bg-indigo-600 hover:bg-indigo-700 text-white"
+            )}
+          >
+            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+            {cta}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** UI helpers */
 function Modal({
   title,
@@ -1284,9 +1426,7 @@ function Modal({
 }) {
   return (
     <div className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4">
-      {/* container modal */}
       <div className="w-full max-w-xl rounded-2xl bg-white border shadow-xl overflow-hidden flex flex-col max-h-[85vh]">
-        {/* header */}
         <div className="flex items-center justify-between px-5 py-4 border-b shrink-0">
           <div className="font-semibold">{title}</div>
           <button
@@ -1297,8 +1437,6 @@ function Modal({
             <X className="w-5 h-5" />
           </button>
         </div>
-
-        {/* body (scroll) */}
         <div className="px-5 py-4 overflow-y-auto flex-1">{children}</div>
       </div>
     </div>
