@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Topbar from "../components/Topbar";
 import type { UserLite } from "../types";
 import {
@@ -17,7 +17,7 @@ import {
   Info,
 } from "lucide-react";
 
-import { db, firebaseConfig } from "../lib/firebase";
+import { db } from "../lib/firebase";
 import {
   collection,
   doc,
@@ -135,8 +135,19 @@ type StaffRow = {
   tanggalISO: string;
   checkInAt?: any;
   checkOutAt?: any;
+
+  // check-in
   fotoDataUrl?: string | null;
   lokasi?: { lat: number; lng: number; accuracy?: number | null } | null;
+
+  // check-out (BARU)
+  checkOutFotoDataUrl?: string | null;
+  checkOutLokasi?: {
+    lat: number;
+    lng: number;
+    accuracy?: number | null;
+  } | null;
+
   role?: string;
   uid?: string;
 };
@@ -148,17 +159,17 @@ export default function DosenPage({
   user: UserLite;
   onLogout: () => void;
 }) {
-  /** ===== UI menu (SAMAKAN KARYAWAN) ===== */
+  /** ===== UI menu ===== */
   const [activeMenu, setActiveMenu] = useState<MenuKey>("absensi");
 
-  /** ===== JAM LIVE (berjalan terus) ===== */
+  /** ===== JAM LIVE ===== */
   const [now, setNow] = useState<Date>(() => new Date());
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
 
-  /** ===== ABSENSI DOSEN (tetap seperti punyamu) ===== */
+  /** ===== ABSENSI DOSEN ===== */
   const [staffSaving, setStaffSaving] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
   const [staffInfo, setStaffInfo] = useState<string | null>(null);
@@ -193,7 +204,9 @@ export default function DosenPage({
     return () => unsub();
   }, [staffDocId]);
 
-  // modal check-in (foto + lokasi)
+  /** =========================
+   *  CHECK-IN MODAL (foto + lokasi)
+   * ========================= */
   const [openCheckIn, setOpenCheckIn] = useState(false);
   const [locLoading, setLocLoading] = useState(false);
   const [loc, setLoc] = useState<{
@@ -340,7 +353,6 @@ export default function DosenPage({
       setOpenCheckIn(false);
       resetCheckInModalState();
 
-      // UX: setelah confirm, pindah ke riwayat
       setActiveMenu("riwayat");
     } catch (e: any) {
       console.error("CHECKIN error:", e);
@@ -350,15 +362,152 @@ export default function DosenPage({
     }
   }
 
-  async function handleCheckOut() {
+  /** =========================
+   *  CHECK-OUT MODAL (foto + lokasi)  ✅ BARU
+   * ========================= */
+  const [openCheckOut, setOpenCheckOut] = useState(false);
+
+  const [outLocLoading, setOutLocLoading] = useState(false);
+  const [outLoc, setOutLoc] = useState<{
+    lat: number;
+    lng: number;
+    accuracy: number | null;
+  } | null>(null);
+
+  const [outCamLoading, setOutCamLoading] = useState(false);
+  const [outCamError, setOutCamError] = useState<string | null>(null);
+  const [outPhotoDataUrl, setOutPhotoDataUrl] = useState<string | null>(null);
+
+  const outVideoRef = useRef<HTMLVideoElement | null>(null);
+  const outStreamRef = useRef<MediaStream | null>(null);
+
+  function stopOutCamera() {
+    try {
+      if (outStreamRef.current)
+        outStreamRef.current.getTracks().forEach((t) => t.stop());
+    } catch {}
+    outStreamRef.current = null;
+    if (outVideoRef.current) {
+      try {
+        // @ts-ignore
+        outVideoRef.current.srcObject = null;
+      } catch {}
+    }
+  }
+
+  function resetCheckOutModalState() {
+    setOutLoc(null);
+    setOutLocLoading(false);
+    setOutCamLoading(false);
+    setOutCamError(null);
+    setOutPhotoDataUrl(null);
+    stopOutCamera();
+  }
+
+  async function openCheckOutModal() {
+    setStaffError(null);
+    setStaffInfo(null);
+    resetCheckOutModalState();
+    setOpenCheckOut(true);
+  }
+
+  async function requestOutLocation() {
+    try {
+      setOutLocLoading(true);
+      setStaffError(null);
+      setStaffInfo(null);
+      const pos = await getBrowserPosition();
+      setOutLoc(pos);
+      setStaffInfo("✅ Lokasi pulang berhasil diambil.");
+    } catch (e: any) {
+      setStaffError(e?.message || "Gagal ambil lokasi pulang.");
+    } finally {
+      setOutLocLoading(false);
+    }
+  }
+
+  async function startOutCamera() {
+    try {
+      setOutCamLoading(true);
+      setOutCamError(null);
+      setStaffError(null);
+      setStaffInfo(null);
+
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setOutCamError("Browser tidak mendukung kamera (getUserMedia).");
+        return;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user" },
+        audio: false,
+      });
+
+      outStreamRef.current = stream;
+      if (outVideoRef.current) {
+        // @ts-ignore
+        outVideoRef.current.srcObject = stream;
+        await outVideoRef.current.play().catch(() => {});
+      }
+
+      setStaffInfo("✅ Kamera pulang aktif. Silakan ambil foto.");
+    } catch (e: any) {
+      setOutCamError(e?.message || "Gagal mengaktifkan kamera pulang.");
+    } finally {
+      setOutCamLoading(false);
+    }
+  }
+
+  function captureOutPhoto() {
+    if (!outVideoRef.current) return;
+    const v = outVideoRef.current;
+
+    const w = v.videoWidth || 640;
+    const h = v.videoHeight || 480;
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
+    ctx.drawImage(v, 0, 0, w, h);
+    const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+    setOutPhotoDataUrl(dataUrl);
+
+    stopOutCamera();
+    setStaffInfo("✅ Foto pulang berhasil diambil.");
+  }
+
+  async function handleConfirmCheckOut() {
     try {
       setStaffSaving(true);
       setStaffError(null);
       setStaffInfo(null);
+
+      if (!outLoc) {
+        setStaffError("Ambil lokasi dulu sebelum absen pulang.");
+        return;
+      }
+      if (!outPhotoDataUrl) {
+        setStaffError("Ambil foto dulu sebelum absen pulang.");
+        return;
+      }
+
       await updateDoc(doc(db, "staff_attendance", staffDocId), {
         checkOutAt: serverTimestamp(),
+        checkOutLokasi: {
+          lat: outLoc.lat,
+          lng: outLoc.lng,
+          accuracy: outLoc.accuracy,
+        },
+        checkOutFotoDataUrl: outPhotoDataUrl,
+        checkOutUserAgent: navigator.userAgent,
       });
-      setStaffInfo("✅ Check-out berhasil tersimpan.");
+
+      setStaffInfo("✅ Check-out berhasil tersimpan (dengan foto + lokasi).");
+      setOpenCheckOut(false);
+      resetCheckOutModalState();
       setActiveMenu("riwayat");
     } catch (e: any) {
       setStaffError(
@@ -371,7 +520,10 @@ export default function DosenPage({
   }
 
   useEffect(() => {
-    return () => stopCamera();
+    return () => {
+      stopCamera();
+      stopOutCamera();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -423,8 +575,14 @@ export default function DosenPage({
             tanggalISO: String(data.tanggalISO || ""),
             checkInAt: data.checkInAt,
             checkOutAt: data.checkOutAt,
+
             fotoDataUrl: data.fotoDataUrl ?? null,
             lokasi: data.lokasi ?? null,
+
+            // BARU
+            checkOutFotoDataUrl: data.checkOutFotoDataUrl ?? null,
+            checkOutLokasi: data.checkOutLokasi ?? null,
+
             role: data.role,
             uid: data.uid,
           };
@@ -450,6 +608,10 @@ export default function DosenPage({
                   checkOutAt: data.checkOutAt,
                   fotoDataUrl: data.fotoDataUrl ?? null,
                   lokasi: data.lokasi ?? null,
+
+                  checkOutFotoDataUrl: data.checkOutFotoDataUrl ?? null,
+                  checkOutLokasi: data.checkOutLokasi ?? null,
+
                   role: data.role,
                   uid: data.uid,
                 };
@@ -485,7 +647,7 @@ export default function DosenPage({
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900">
       <div className="flex min-h-screen">
-        {/* SIDEBAR (samakan karyawan) */}
+        {/* SIDEBAR */}
         <aside className="hidden md:flex w-64 shrink-0 border-r bg-white">
           <div className="w-full flex flex-col p-4">
             <div className="flex items-center gap-3 px-2 py-2">
@@ -562,7 +724,6 @@ export default function DosenPage({
                           </div>
                         </div>
 
-                        {/* ====== METRIC: JAM LIVE + TANGGAL PROFESIONAL ====== */}
                         <div className="grid grid-cols-2 gap-3 w-full md:w-auto">
                           <Metric
                             label="Waktu"
@@ -614,7 +775,7 @@ export default function DosenPage({
                           alert("Anda belum check-in hari ini.");
                           return;
                         }
-                        handleCheckOut();
+                        openCheckOutModal(); // ✅ sekarang pakai modal
                       }}
                       disabled={staffSaving}
                       cta="Ambil Foto & Lokasi"
@@ -653,9 +814,16 @@ export default function DosenPage({
                         {history.map((r) => {
                           const masuk = tsToTime(r.checkInAt);
                           const pulang = tsToTime(r.checkOutAt);
-                          const mapsUrl =
+
+                          const mapsUrlIn =
                             r.lokasi?.lat != null && r.lokasi?.lng != null
                               ? `https://www.google.com/maps?q=${r.lokasi.lat},${r.lokasi.lng}`
+                              : null;
+
+                          const mapsUrlOut =
+                            r.checkOutLokasi?.lat != null &&
+                            r.checkOutLokasi?.lng != null
+                              ? `https://www.google.com/maps?q=${r.checkOutLokasi.lat},${r.checkOutLokasi.lng}`
                               : null;
 
                           return (
@@ -667,6 +835,7 @@ export default function DosenPage({
                                 <img
                                   src={r.fotoDataUrl}
                                   className="w-16 h-16 object-cover rounded-md border"
+                                  alt="foto masuk"
                                 />
                               ) : (
                                 <div className="w-16 h-16 grid place-items-center rounded-md border bg-slate-50 text-slate-400">
@@ -683,10 +852,11 @@ export default function DosenPage({
                                   {pulang || "-"}
                                 </div>
 
+                                {/* lokasi masuk */}
                                 {r.lokasi && (
                                   <div className="mt-1 text-xs text-slate-600 space-y-0.5">
                                     <div className="truncate">
-                                      Lat/Lng:{" "}
+                                      (Masuk) Lat/Lng:{" "}
                                       {typeof r.lokasi.lat === "number"
                                         ? r.lokasi.lat.toFixed(6)
                                         : "-"}
@@ -697,18 +867,52 @@ export default function DosenPage({
                                     </div>
                                     {typeof r.lokasi.accuracy === "number" && (
                                       <div>
-                                        Akurasi: ±
+                                        (Masuk) Akurasi: ±
                                         {Math.round(r.lokasi.accuracy)} m
                                       </div>
                                     )}
-                                    {mapsUrl && (
+                                    {mapsUrlIn && (
                                       <a
-                                        href={mapsUrl}
+                                        href={mapsUrlIn}
                                         target="_blank"
                                         rel="noreferrer"
                                         className="text-indigo-600 hover:underline"
                                       >
-                                        Lihat di Google Maps
+                                        Maps Masuk
+                                      </a>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* lokasi pulang (BARU) */}
+                                {r.checkOutLokasi && (
+                                  <div className="mt-2 text-xs text-slate-600 space-y-0.5">
+                                    <div className="truncate">
+                                      (Pulang) Lat/Lng:{" "}
+                                      {typeof r.checkOutLokasi.lat === "number"
+                                        ? r.checkOutLokasi.lat.toFixed(6)
+                                        : "-"}
+                                      ,{" "}
+                                      {typeof r.checkOutLokasi.lng === "number"
+                                        ? r.checkOutLokasi.lng.toFixed(6)
+                                        : "-"}
+                                    </div>
+                                    {typeof r.checkOutLokasi.accuracy ===
+                                      "number" && (
+                                      <div>
+                                        (Pulang) Akurasi: ±
+                                        {Math.round(r.checkOutLokasi.accuracy)}{" "}
+                                        m
+                                      </div>
+                                    )}
+                                    {mapsUrlOut && (
+                                      <a
+                                        href={mapsUrlOut}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-indigo-600 hover:underline"
+                                      >
+                                        Maps Pulang
                                       </a>
                                     )}
                                   </div>
@@ -740,7 +944,8 @@ export default function DosenPage({
                       <div className="rounded-2xl border bg-slate-50 p-4">
                         <div className="font-medium">2) Absen Pulang</div>
                         <div className="text-slate-600 mt-1">
-                          Absen pulang hanya bisa jika sudah absen masuk.
+                          Absen pulang hanya bisa jika sudah absen masuk, dan
+                          juga wajib foto + lokasi.
                         </div>
                       </div>
 
@@ -766,7 +971,7 @@ export default function DosenPage({
         </div>
       </div>
 
-      {/* MODAL: CHECK-IN (foto + lokasi) */}
+      {/* MODAL: CHECK-IN */}
       {openCheckIn && (
         <Modal
           title="Check-in Absensi (Foto + Lokasi)"
@@ -941,6 +1146,182 @@ export default function DosenPage({
           </div>
         </Modal>
       )}
+
+      {/* MODAL: CHECK-OUT ✅ BARU */}
+      {openCheckOut && (
+        <Modal
+          title="Check-out Absensi (Foto + Lokasi)"
+          onClose={() => {
+            setOpenCheckOut(false);
+            resetCheckOutModalState();
+          }}
+        >
+          <div className="grid gap-4">
+            {/* lokasi */}
+            <div className="rounded-2xl border bg-slate-50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-800 inline-flex items-center gap-2">
+                    <MapPin className="w-4 h-4" />
+                    Lokasi Pulang
+                  </div>
+                  <div className="text-xs text-slate-600 mt-1">
+                    Ambil lokasi untuk validasi absen pulang.
+                  </div>
+                </div>
+                <button
+                  onClick={requestOutLocation}
+                  disabled={outLocLoading || staffSaving}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white border hover:bg-slate-100 disabled:opacity-60"
+                >
+                  {outLocLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <RefreshCw className="w-4 h-4" />
+                  )}
+                  Ambil Lokasi
+                </button>
+              </div>
+
+              {outLoc && (
+                <div className="mt-3 text-xs text-slate-700">
+                  <div>
+                    <span className="font-medium">Lat:</span> {outLoc.lat}
+                  </div>
+                  <div>
+                    <span className="font-medium">Lng:</span> {outLoc.lng}
+                  </div>
+                  <div>
+                    <span className="font-medium">Akurasi:</span>{" "}
+                    {outLoc.accuracy != null
+                      ? `${Math.round(outLoc.accuracy)} m`
+                      : "-"}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* kamera */}
+            <div className="rounded-2xl border bg-slate-50 p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-slate-800 inline-flex items-center gap-2">
+                    <Camera className="w-4 h-4" />
+                    Foto Pulang
+                  </div>
+                  <div className="text-xs text-slate-600 mt-1">
+                    Aktifkan kamera lalu ambil foto untuk check-out.
+                  </div>
+                </div>
+                <button
+                  onClick={startOutCamera}
+                  disabled={outCamLoading || staffSaving}
+                  className="inline-flex items-center gap-2 px-3 py-2 rounded-xl bg-white border hover:bg-slate-100 disabled:opacity-60"
+                >
+                  {outCamLoading ? (
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                  ) : (
+                    <Camera className="w-4 h-4" />
+                  )}
+                  Buka Kamera
+                </button>
+              </div>
+
+              {outCamError && (
+                <div className="mt-2 text-xs text-red-600">{outCamError}</div>
+              )}
+
+              <div className="mt-3 grid gap-3">
+                {!outPhotoDataUrl ? (
+                  <div className="grid gap-2">
+                    <div className="rounded-xl overflow-hidden border bg-black">
+                      <video
+                        ref={outVideoRef}
+                        className="w-full h-56 object-cover"
+                        playsInline
+                        muted
+                      />
+                    </div>
+
+                    <button
+                      onClick={captureOutPhoto}
+                      disabled={staffSaving || !outStreamRef.current}
+                      className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-indigo-600 text-white hover:bg-indigo-700 disabled:opacity-60"
+                    >
+                      <Camera className="w-4 h-4" />
+                      Ambil Foto
+                    </button>
+
+                    <div className="text-[11px] text-slate-500">
+                      Jika video tidak muncul, pastikan izin kamera di browser
+                      sudah Allow.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid gap-2">
+                    <img
+                      src={outPhotoDataUrl}
+                      alt="Foto Check-out"
+                      className="w-full h-56 object-cover rounded-xl border bg-white"
+                    />
+                    <button
+                      onClick={() => {
+                        setOutPhotoDataUrl(null);
+                        setStaffInfo(null);
+                      }}
+                      disabled={staffSaving}
+                      className="inline-flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-white border hover:bg-slate-100 disabled:opacity-60"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      Ulang Foto
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {(staffError || staffInfo) && (
+              <div className="text-sm">
+                {staffError && <div className="text-red-600">{staffError}</div>}
+                {staffInfo && (
+                  <div className="text-emerald-700">{staffInfo}</div>
+                )}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                onClick={() => {
+                  setOpenCheckOut(false);
+                  resetCheckOutModalState();
+                }}
+                className="px-3 py-2 rounded-xl border hover:bg-slate-50"
+                disabled={staffSaving}
+              >
+                Batal
+              </button>
+
+              <button
+                onClick={handleConfirmCheckOut}
+                disabled={staffSaving || !outLoc || !outPhotoDataUrl}
+                className="px-4 py-2 rounded-xl bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 inline-flex items-center gap-2"
+              >
+                {staffSaving ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Check className="w-4 h-4" />
+                )}
+                Simpan Check-out
+              </button>
+            </div>
+
+            <div className="text-xs text-slate-500">
+              Catatan: Foto pulang disimpan sebagai{" "}
+              <code>checkOutFotoDataUrl</code> di Firestore.
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -958,8 +1339,6 @@ function Metric({
   return (
     <div className="rounded-2xl border bg-white/80 backdrop-blur px-4 py-3">
       <div className="text-[11px] tracking-widest text-slate-500">{label}</div>
-
-      {/* lebih profesional: angka rapi + lebih tegas */}
       <div className="mt-0.5 flex items-baseline gap-2">
         <div className="text-[18px] font-semibold tabular-nums leading-none">
           {value}
@@ -1032,7 +1411,6 @@ function AbsCardLikeKaryawan({
   );
 }
 
-/** UI helpers */
 function Modal({
   title,
   onClose,

@@ -17,6 +17,9 @@ import {
   Database,
   FileSpreadsheet,
   LogOut,
+  MapPin,
+  Crosshair,
+  ExternalLink,
 } from "lucide-react";
 import type { UserLite } from "../types";
 
@@ -108,9 +111,11 @@ type AttRow = {
   checkInAt?: any;
   checkOutAt?: any;
 
+  // model yang kamu pakai sekarang (single lokasi)
   fotoDataUrl?: string | null;
   lokasi?: { lat: number; lng: number; accuracy?: number | null } | null;
 
+  // model opsional kalau nanti ada pisah in/out
   fotoIn?: string | null;
   fotoOut?: string | null;
   lokasiIn?: {
@@ -134,6 +139,15 @@ function tsToHHMM(ts: any) {
   } catch {
     return "-";
   }
+}
+
+function formatCoords(lat?: number | null, lng?: number | null) {
+  if (typeof lat !== "number" || typeof lng !== "number") return "-";
+  return `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
+}
+function mapsUrl(lat?: number | null, lng?: number | null) {
+  if (typeof lat !== "number" || typeof lng !== "number") return "";
+  return `https://www.google.com/maps?q=${lat},${lng}`;
 }
 
 /** Sidebar item kecil */
@@ -672,7 +686,7 @@ export default function SuperAdminPage({
                 onClick={() => setActiveMenu("master")}
               />
 
-              {/* ✅ INI: Rekap Absensi di atas Catatan */}
+              {/* ✅ Rekap Absensi di atas Catatan */}
               <SideItem
                 icon={<FileSpreadsheet className="w-4 h-4" />}
                 label="Rekap Absensi"
@@ -859,7 +873,6 @@ export default function SuperAdminPage({
                                   Reset PW
                                 </button>
 
-                                {/* ✅ sekarang tombol ini pindah ke menu "Rekap Absensi" */}
                                 <button
                                   onClick={() => {
                                     setSelectedUid(u.id);
@@ -1033,7 +1046,7 @@ export default function SuperAdminPage({
                 </section>
               )}
 
-              {/* ===== CATATAN (tetap catatan lama) ===== */}
+              {/* ===== CATATAN ===== */}
               {activeMenu === "catatan" && (
                 <section className="rounded-2xl border bg-white p-5">
                   <h2 className="font-semibold">Catatan</h2>
@@ -1471,6 +1484,27 @@ function RekapAbsensiPanel({
     [rows]
   );
 
+  // ✅ helper lokasi: prioritas lokasiIn/lokasiOut, fallback lokasi tunggal
+  function getLoc(r: AttRow, kind: "in" | "out") {
+    if (kind === "in") {
+      const li = r.lokasiIn;
+      if (li && typeof li.lat === "number" && typeof li.lng === "number") {
+        return { lat: li.lat, lng: li.lng, accuracy: li.accuracy ?? null };
+      }
+      const l = r.lokasi;
+      if (l && typeof l.lat === "number" && typeof l.lng === "number") {
+        return { lat: l.lat, lng: l.lng, accuracy: l.accuracy ?? null };
+      }
+      return null;
+    }
+    // out
+    const lo = r.lokasiOut;
+    if (lo && typeof lo.lat === "number" && typeof lo.lng === "number") {
+      return { lat: lo.lat, lng: lo.lng, accuracy: lo.accuracy ?? null };
+    }
+    return null;
+  }
+
   return (
     <div className="mt-4 rounded-2xl border bg-white p-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
@@ -1538,6 +1572,8 @@ function RekapAbsensiPanel({
                   <th className="px-4 py-3">Role</th>
                   <th className="px-4 py-3">Masuk</th>
                   <th className="px-4 py-3">Pulang</th>
+                  {/* ✅ kolom baru */}
+                  <th className="px-4 py-3">Lokasi</th>
                   <th className="px-4 py-3">Status</th>
                 </tr>
               </thead>
@@ -1552,14 +1588,128 @@ function RekapAbsensiPanel({
                       ? "Belum Pulang"
                       : "Belum Masuk";
 
+                  const locIn = getLoc(r, "in");
+                  const locOut = getLoc(r, "out");
+
                   return (
-                    <tr key={r.id} className="border-t">
-                      <td className="px-4 py-3">
+                    <tr key={r.id} className="border-t align-top">
+                      <td className="px-4 py-3 whitespace-nowrap">
                         {String(r.tanggalISO || "-")}
                       </td>
-                      <td className="px-4 py-3">{String(r.role || "-")}</td>
-                      <td className="px-4 py-3">{masuk}</td>
-                      <td className="px-4 py-3">{pulang}</td>
+
+                      <td className="px-4 py-3">
+                        <span className="inline-flex items-center px-2 py-1 rounded-full border bg-white text-xs text-slate-700">
+                          {String(r.role || "-").toUpperCase()}
+                        </span>
+                      </td>
+
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <span
+                          className={cx(
+                            "inline-flex items-center gap-2 px-2 py-1 rounded-full border text-xs",
+                            masuk !== "-" &&
+                              "border-emerald-200 bg-emerald-50 text-emerald-700",
+                            masuk === "-" &&
+                              "border-slate-200 bg-white text-slate-600"
+                          )}
+                        >
+                          {masuk}
+                        </span>
+                      </td>
+
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <span
+                          className={cx(
+                            "inline-flex items-center gap-2 px-2 py-1 rounded-full border text-xs",
+                            pulang !== "-" &&
+                              "border-indigo-200 bg-indigo-50 text-indigo-700",
+                            pulang === "-" &&
+                              "border-slate-200 bg-white text-slate-600"
+                          )}
+                        >
+                          {pulang}
+                        </span>
+                      </td>
+
+                      {/* ✅ LOKASI tampil rapi */}
+                      <td className="px-4 py-3">
+                        <div className="grid gap-2 min-w-[240px]">
+                          {/* lokasi masuk */}
+                          <div className="rounded-xl border bg-white p-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-xs font-medium text-slate-700 inline-flex items-center gap-1">
+                                <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                                Lokasi Masuk
+                              </div>
+                              {locIn ? (
+                                <a
+                                  href={mapsUrl(locIn.lat, locIn.lng)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-xs inline-flex items-center gap-1 text-indigo-600 hover:underline"
+                                  title="Buka Google Maps"
+                                >
+                                  Maps <ExternalLink className="w-3.5 h-3.5" />
+                                </a>
+                              ) : (
+                                <span className="text-xs text-slate-400">
+                                  -
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="mt-1 text-xs text-slate-600">
+                              {locIn ? formatCoords(locIn.lat, locIn.lng) : "-"}
+                            </div>
+
+                            {locIn && typeof locIn.accuracy === "number" && (
+                              <div className="mt-1 text-[11px] text-slate-500 inline-flex items-center gap-1">
+                                <Crosshair className="w-3.5 h-3.5 text-slate-400" />
+                                Akurasi ±{Math.round(locIn.accuracy)} m
+                              </div>
+                            )}
+                          </div>
+
+                          {/* lokasi pulang */}
+                          <div className="rounded-xl border bg-white p-2">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="text-xs font-medium text-slate-700 inline-flex items-center gap-1">
+                                <MapPin className="w-3.5 h-3.5 text-slate-400" />
+                                Lokasi Pulang
+                              </div>
+                              {locOut ? (
+                                <a
+                                  href={mapsUrl(locOut.lat, locOut.lng)}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="text-xs inline-flex items-center gap-1 text-indigo-600 hover:underline"
+                                  title="Buka Google Maps"
+                                >
+                                  Maps <ExternalLink className="w-3.5 h-3.5" />
+                                </a>
+                              ) : (
+                                <span className="text-xs text-slate-400">
+                                  -
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="mt-1 text-xs text-slate-600">
+                              {locOut
+                                ? formatCoords(locOut.lat, locOut.lng)
+                                : "-"}
+                            </div>
+
+                            {locOut && typeof locOut.accuracy === "number" && (
+                              <div className="mt-1 text-[11px] text-slate-500 inline-flex items-center gap-1">
+                                <Crosshair className="w-3.5 h-3.5 text-slate-400" />
+                                Akurasi ±{Math.round(locOut.accuracy)} m
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+
                       <td className="px-4 py-3">
                         <span
                           className={cx(
