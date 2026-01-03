@@ -33,6 +33,8 @@ import {
   updateDoc,
   setDoc,
   getDoc,
+  where,
+  limit,
 } from "firebase/firestore";
 import {
   createUserWithEmailAndPassword,
@@ -75,7 +77,8 @@ type UserRow = {
   username?: string | null;
 };
 
-type MenuKey = "dashboard" | "users" | "master" | "catatan";
+// ✅ tambah menu "rekap"
+type MenuKey = "dashboard" | "users" | "master" | "rekap" | "catatan";
 
 function cx(...a: Array<string | false | null | undefined>) {
   return a.filter(Boolean).join(" ");
@@ -92,6 +95,45 @@ function sanitizeUsername(raw: string) {
 function usernameFromEmail(email: string) {
   const left = String(email || "").split("@")[0] || "";
   return sanitizeUsername(left);
+}
+
+/** =========================
+ *  Rekap Absensi (sidebar menu)
+ *  ========================= */
+type AttRow = {
+  id: string;
+  uid: string;
+  role?: Role | string;
+  tanggalISO: string;
+  checkInAt?: any;
+  checkOutAt?: any;
+
+  fotoDataUrl?: string | null;
+  lokasi?: { lat: number; lng: number; accuracy?: number | null } | null;
+
+  fotoIn?: string | null;
+  fotoOut?: string | null;
+  lokasiIn?: {
+    lat: number | null;
+    lng: number | null;
+    accuracy?: number | null;
+  } | null;
+  lokasiOut?: {
+    lat: number | null;
+    lng: number | null;
+    accuracy?: number | null;
+  } | null;
+};
+
+function tsToHHMM(ts: any) {
+  try {
+    const d: Date =
+      typeof ts?.toDate === "function" ? ts.toDate() : new Date(ts);
+    if (isNaN(d.getTime())) return "-";
+    return d.toTimeString().slice(0, 5);
+  } catch {
+    return "-";
+  }
 }
 
 /** Sidebar item kecil */
@@ -138,7 +180,7 @@ export default function SuperAdminPage({
   onLogout: () => void;
 }) {
   /** =========================
-   * UI: menu aktif (INI BARU, untuk ganti konten)
+   * UI: menu aktif
    * ========================= */
   const [activeMenu, setActiveMenu] = useState<MenuKey>("users");
 
@@ -385,12 +427,14 @@ export default function SuperAdminPage({
 
   const [busyUid, setBusyUid] = useState<string | null>(null);
 
+  // ✅ untuk rekap absensi: pilih user
+  const [selectedUid, setSelectedUid] = useState<string>("");
+
   useEffect(() => {
     setUsersLoading(true);
     setUsersErr(null);
 
     const q = query(collection(db, "users"), orderBy("createdAt", "desc"));
-
     const unsub = onSnapshot(
       q,
       (snap) => {
@@ -627,6 +671,15 @@ export default function SuperAdminPage({
                 active={activeMenu === "master"}
                 onClick={() => setActiveMenu("master")}
               />
+
+              {/* ✅ INI: Rekap Absensi di atas Catatan */}
+              <SideItem
+                icon={<FileSpreadsheet className="w-4 h-4" />}
+                label="Rekap Absensi"
+                active={activeMenu === "rekap"}
+                onClick={() => setActiveMenu("rekap")}
+              />
+
               <SideItem
                 icon={<FileSpreadsheet className="w-4 h-4" />}
                 label="Catatan"
@@ -663,7 +716,7 @@ export default function SuperAdminPage({
           {/* Main content */}
           <div className="px-4 sm:px-6 pb-10">
             <main className="max-w-6xl mx-auto grid gap-6">
-              {/* ===== DASHBOARD (placeholder ringan) ===== */}
+              {/* ===== DASHBOARD ===== */}
               {activeMenu === "dashboard" && (
                 <section className="rounded-2xl border bg-white p-5">
                   <h2 className="font-semibold">Dashboard</h2>
@@ -806,6 +859,19 @@ export default function SuperAdminPage({
                                   Reset PW
                                 </button>
 
+                                {/* ✅ sekarang tombol ini pindah ke menu "Rekap Absensi" */}
+                                <button
+                                  onClick={() => {
+                                    setSelectedUid(u.id);
+                                    setActiveMenu("rekap");
+                                  }}
+                                  className="inline-flex items-center gap-2 px-3 py-2 rounded-lg border hover:bg-slate-50 text-slate-700"
+                                  title="Lihat rekap absensi user ini"
+                                >
+                                  <FileSpreadsheet className="w-4 h-4" />
+                                  Rekap Absen
+                                </button>
+
                                 <button
                                   onClick={() => toggleDisable(u)}
                                   disabled={busy}
@@ -946,7 +1012,28 @@ export default function SuperAdminPage({
                 </section>
               )}
 
-              {/* ===== CATATAN ===== */}
+              {/* ===== REKAP ABSENSI (menu sidebar) ===== */}
+              {activeMenu === "rekap" && (
+                <section className="rounded-2xl border bg-white p-5">
+                  <div className="flex items-start justify-between gap-3 flex-wrap">
+                    <div>
+                      <h2 className="font-semibold">Rekap Absensi</h2>
+                      <p className="text-sm text-slate-600 mt-1">
+                        Rekapan absensi user (karyawan/dosen) dari{" "}
+                        <code>staff_attendance</code>.
+                      </p>
+                    </div>
+                  </div>
+
+                  <RekapAbsensiPanel
+                    users={users}
+                    selectedUid={selectedUid}
+                    setSelectedUid={setSelectedUid}
+                  />
+                </section>
+              )}
+
+              {/* ===== CATATAN (tetap catatan lama) ===== */}
               {activeMenu === "catatan" && (
                 <section className="rounded-2xl border bg-white p-5">
                   <h2 className="font-semibold">Catatan</h2>
@@ -1274,6 +1361,233 @@ export default function SuperAdminPage({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function RekapAbsensiPanel({
+  users,
+  selectedUid,
+  setSelectedUid,
+}: {
+  users: UserRow[];
+  selectedUid: string;
+  setSelectedUid: (v: string) => void;
+}) {
+  const [rows, setRows] = useState<AttRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const selectedUser = useMemo(
+    () => users.find((u) => u.id === selectedUid) || null,
+    [users, selectedUid]
+  );
+
+  useEffect(() => {
+    if (!selectedUid) {
+      setRows([]);
+      setErr(null);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setErr(null);
+
+    const colRef = collection(db, "staff_attendance");
+
+    const q1 = query(
+      colRef,
+      where("uid", "==", selectedUid),
+      orderBy("tanggalISO", "desc"),
+      limit(62)
+    );
+
+    let unsubMain = () => {};
+    let unsubFallback = () => {};
+
+    unsubMain = onSnapshot(
+      q1,
+      (snap) => {
+        const data = snap.docs.map((d) => ({
+          id: d.id,
+          ...(d.data() as any),
+        })) as AttRow[];
+        setRows(data);
+        setLoading(false);
+        setErr(null);
+      },
+      (e) => {
+        const msg = String(e?.message || "");
+        console.error("RekapAbsensiPanel q1 error:", e);
+
+        if (
+          msg.toLowerCase().includes("requires an index") ||
+          msg.toLowerCase().includes("index is currently building")
+        ) {
+          const q2 = query(colRef, where("uid", "==", selectedUid), limit(200));
+          unsubFallback = onSnapshot(
+            q2,
+            (snap2) => {
+              const data2 = snap2.docs.map((d) => ({
+                id: d.id,
+                ...(d.data() as any),
+              })) as AttRow[];
+              data2.sort((a, b) =>
+                String(b.tanggalISO || "").localeCompare(
+                  String(a.tanggalISO || "")
+                )
+              );
+              setRows(data2.slice(0, 62));
+              setLoading(false);
+              setErr(null);
+            },
+            (e2) => {
+              setErr(String(e2?.message || "Gagal memuat rekap absensi."));
+              setLoading(false);
+            }
+          );
+        } else {
+          setErr(msg || "Gagal memuat rekap absensi.");
+          setLoading(false);
+        }
+      }
+    );
+
+    return () => {
+      try {
+        unsubMain();
+        unsubFallback();
+      } catch {}
+    };
+  }, [selectedUid]);
+
+  const totalMasuk = useMemo(
+    () => rows.filter((r) => !!r.checkInAt).length,
+    [rows]
+  );
+  const totalPulang = useMemo(
+    () => rows.filter((r) => !!r.checkOutAt).length,
+    [rows]
+  );
+
+  return (
+    <div className="mt-4 rounded-2xl border bg-white p-4">
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <div className="font-semibold">Rekap Absensi User</div>
+          <div className="text-sm text-slate-600 mt-1">
+            Data diambil dari <code>staff_attendance</code>.
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <select
+            value={selectedUid}
+            onChange={(e) => setSelectedUid(e.target.value)}
+            className="px-3 py-2 rounded-xl border bg-white text-sm"
+          >
+            <option value="">— Pilih User —</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name} • {String(u.role).toUpperCase()}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      {selectedUser && (
+        <div className="mt-3 rounded-2xl border bg-slate-50 p-4">
+          <div className="font-semibold">{selectedUser.name}</div>
+          <div className="text-sm text-slate-600">{selectedUser.email}</div>
+          <div className="mt-2 flex flex-wrap gap-2 text-xs">
+            <span className="px-2 py-1 rounded-full border bg-white">
+              Role: <b>{String(selectedUser.role).toUpperCase()}</b>
+            </span>
+            <span className="px-2 py-1 rounded-full border bg-white">
+              Masuk: <b>{totalMasuk}</b>
+            </span>
+            <span className="px-2 py-1 rounded-full border bg-white">
+              Pulang: <b>{totalPulang}</b>
+            </span>
+          </div>
+        </div>
+      )}
+
+      <div className="mt-3">
+        {!selectedUid ? (
+          <div className="text-sm text-slate-600">
+            Pilih user untuk menampilkan rekap.
+          </div>
+        ) : loading ? (
+          <div className="text-sm text-slate-500 flex items-center gap-2">
+            <Loader2 className="w-4 h-4 animate-spin" />
+            Memuat rekap...
+          </div>
+        ) : err ? (
+          <div className="text-sm text-red-600">{err}</div>
+        ) : rows.length === 0 ? (
+          <div className="text-sm text-slate-600">Belum ada data absensi.</div>
+        ) : (
+          <div className="overflow-x-auto rounded-2xl border mt-3">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-50">
+                <tr className="text-left">
+                  <th className="px-4 py-3">Tanggal</th>
+                  <th className="px-4 py-3">Role</th>
+                  <th className="px-4 py-3">Masuk</th>
+                  <th className="px-4 py-3">Pulang</th>
+                  <th className="px-4 py-3">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const masuk = tsToHHMM(r.checkInAt);
+                  const pulang = tsToHHMM(r.checkOutAt);
+                  const status =
+                    r.checkInAt && r.checkOutAt
+                      ? "Lengkap"
+                      : r.checkInAt
+                      ? "Belum Pulang"
+                      : "Belum Masuk";
+
+                  return (
+                    <tr key={r.id} className="border-t">
+                      <td className="px-4 py-3">
+                        {String(r.tanggalISO || "-")}
+                      </td>
+                      <td className="px-4 py-3">{String(r.role || "-")}</td>
+                      <td className="px-4 py-3">{masuk}</td>
+                      <td className="px-4 py-3">{pulang}</td>
+                      <td className="px-4 py-3">
+                        <span
+                          className={cx(
+                            "inline-flex items-center px-2 py-1 rounded-full border text-xs",
+                            status === "Lengkap" &&
+                              "border-emerald-200 bg-emerald-50 text-emerald-700",
+                            status === "Belum Pulang" &&
+                              "border-amber-200 bg-amber-50 text-amber-700",
+                            status === "Belum Masuk" &&
+                              "border-slate-200 bg-white text-slate-600"
+                          )}
+                        >
+                          {status}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      <div className="mt-3 text-xs text-slate-500">
+        Jika index Firestore belum siap, sistem otomatis fallback (sorting di
+        client).
+      </div>
     </div>
   );
 }
